@@ -1,91 +1,69 @@
-# PromisedFile
+# promised-file
 
-**Transfer virtual files without staging them as temporary files.**
+Expose data as a file on Windows without writing it to a temporary file first.
 
-PromisedFile is a Rust library for exposing data that does not yet exist as a regular file—such as archive entries, generated content, or remote objects—to other applications as native, transferable files.
+`promised-file` is a Rust library for Windows OLE virtual-file transfer. It lets an application offer data from memory, an archive, a generated report, or another source as files through drag-and-drop or the clipboard. The receiving application asks for the contents when it needs them.
 
-On Windows, it uses Shell virtual-file formats and COM streams to provide file contents **on demand** through drag-and-drop or the clipboard. The receiving application can create the destination file without PromisedFile first writing an intermediate file to disk.
+The project is under development. Only Windows is implemented, and the API is not stable yet.
 
-> **Project status:** Early development. Windows is the only implemented platform. The public API may change before a stable release.
+## How it works
 
-## Why PromisedFile?
+Normally, exporting a file that only exists inside an application means writing it somewhere first, passing the path to another application, and cleaning it up afterward. This library supplies a stream instead of a temporary path.
 
-Consider an application that stores files inside an archive or generates a report on demand. A traditional *export-and-drag* approach might:
+On Windows, an `IDataObject` advertises `CFSTR_FILEDESCRIPTORW` (file names and metadata) and `CFSTR_FILECONTENTS` (file contents as an `IStream`). For multiple files, the receiving application selects the content by `FORMATETC::lindex`.
 
-1. Extract or generate the data into a temporary file.
-2. Pass that file path to the target application.
-3. Clean up the temporary file later.
-
-PromisedFile instead lets the application describe a virtual file and provide a reader for its contents:
-
-```
-ZIP entry / generated data / remote object
-                    |
-                FileSource
-                    |
-             VirtualFile(s)
-                    |
-        Windows IDataObject / IStream
-                    |
-           Explorer or another target
+```text
+VirtualFile(s)  [name, optional size, FileSource]
+    │
+    ▼
+IDataObject  ──► CFSTR_FILEDESCRIPTORW (metadata)
+    │
+    └── GetData(CFSTR_FILECONTENTS, lindex)
+            │
+            ▼
+        FileSource::open()
+            │
+            ▼
+        SourceReader ──► IStream::Read() ──► Receiving application
 ```
 
-Content is read when the receiving application requests it. This avoids *library-managed staging files* and their associated disk writes and cleanup. The receiving application may still create the final destination file, as expected.
+The destination application may of course create a real file. What is avoided is *staging* that file on disk in the source application.
 
-PromisedFile is **not** a virtual filesystem, a global drag-and-drop hook, or a replacement for an application's existing UI and drag lifecycle.
+This is not a virtual filesystem or a global drag-and-drop hook.
 
-## Current features
+## Using it
 
-- Windows virtual-file drag-and-drop and clipboard transfer.
-- Single-file and multi-file transfers.
-- On-demand content delivery through `IStream`.
-- `FileSource` abstraction for supplying a fresh reader per request.
-- `SourceReader::seekable(...)` and `SourceReader::streaming(...)`.
-- Known file sizes and size derivation for seekable readers.
-- `FactorySource` for adapting a closure without defining a new source type.
-- Windows-specific `IDataObject` creation for integration with an application's own drag-and-drop handling.
-- A working example that transfers multiple ZIP entries with lazy decompression.
-
-## Getting started
-
-### Requirements
-
-- Windows and a Rust toolchain with the MSVC target.
-- An application with a Windows message loop to initiate an interactive drag.
-
-For local development, add the library to your application's `Cargo.toml`:
+For local development:
 
 ```toml
 [dependencies]
 promised-file = { path = "../promised-file" }
 ```
 
-### Create a virtual file
+A `VirtualFile` has a name, optional size, and a `FileSource`. A source must return a **new reader** each time `open()` is called; the receiving application is allowed to request the contents more than once.
 
 ```rust
 use promised_file::{begin_drag, FactorySource, SourceReader, VirtualFile};
 use std::io::Cursor;
 
-fn start_drag() -> Result<(), Box<dyn std::error::Error>> {
+fn start_drag() -> promised_file::Result<()> {
     let source = FactorySource::new(|| {
-        Ok(SourceReader::seekable(Cursor::new(b"hello".to_vec())))
+        Ok(SourceReader::seekable(Cursor::new(b"hello\n".to_vec())))
     });
 
-    let file = VirtualFile::new("hello.txt", Box::new(source))?
-        .with_size(5);
-
+    let file = VirtualFile::new("hello.txt", Box::new(source))?;
     begin_drag(vec![file])?;
     Ok(())
 }
 ```
 
-Call `start_drag()` from an appropriate mouse interaction in your application's existing window procedure (for example, `WM_LBUTTONDOWN`). It is **not** intended to be called from a standalone console `main()` without a normal Windows drag interaction.
+Call `start_drag()` from an appropriate mouse event in an application with a Windows message loop, not from a bare console `main()`. See `examples/simple_drag.rs` for the complete window setup.
 
-Pass multiple `VirtualFile` values to `begin_drag(vec![file_a, file_b])` to transfer more than one file.
+Pass a `Vec<VirtualFile>` to transfer multiple files. The same underlying representation is used for clipboard transfers.
 
-### Choose a reader capability
+### Readers and file sizes
 
-`FileSource::open()` returns a new `SourceReader` whenever the receiving application requests a file's contents:
+`FileSource` is intentionally small:
 
 ```rust
 pub trait FileSource {
@@ -93,35 +71,60 @@ pub trait FileSource {
 }
 ```
 
-Choose the appropriate reader when implementing a source:
+There are two kinds of readers:
 
 ```rust
-SourceReader::seekable(reader)  // reader implements Read + Seek
-SourceReader::streaming(reader) // reader implements Read
+SourceReader::seekable(reader)  // Read + Seek
+SourceReader::streaming(reader) // Read only
 ```
 
-A seekable reader can determine its own size when `.with_size(...)` is omitted. A streaming reader can still be used when its size is known; supply that size with `.with_size(...)`.
+If the size is already known, set it with `.with_size(size)`. If it isn't specified, a seekable reader can determine its length without changing its current position. A streaming reader can work without `Seek` as long as the file size is provided.
 
-**Important:** A non-seekable reader with an unknown size is not reliably supported across receiving applications. In the current implementation, `IStream::Stat` cannot report a size for that combination and returns an error. Do not rely on that mode for production use.
+**Known limitation:** a non-seekable reader with an unknown size cannot currently provide a meaningful `IStream::Stat::cbSize`. The current `Stat` implementation returns an error in that case. Support across receiving applications is therefore not guaranteed.
 
-### Integrate with an existing drag-and-drop implementation
+### Use your own drag-and-drop flow
 
-The high-level `begin_drag(...)` helper controls the drag operation for convenience. Applications that already manage `DoDragDrop`, their own `IDropSource`, allowed effects, or other drag behavior can instead obtain the Windows data object:
+`begin_drag()` is a convenience API. It isn't meant to own every application's drag-and-drop behavior.
+
+If the application already has its own `IDropSource`, drag effects, or `DoDragDrop` call, it can create just the data object:
 
 ```rust
 let data_object = promised_file::windows::create_data_object(files)?;
-// Use the IDataObject in your application's existing OLE drag-and-drop flow.
+// Use this IDataObject with your existing OLE drag-and-drop code.
 ```
 
-This lower-level API is Windows-specific. The caller is responsible for the relevant COM/OLE initialization, thread and lifetime rules, and drag-operation management.
+The caller of this lower-level API is responsible for appropriate OLE/COM initialization, threading, and lifetime management.
 
-### Clipboard
+## Code layout
 
-The same virtual-file representation also supports Windows clipboard transfers. As with drag-and-drop, the source application must remain available to supply data while the receiving application requests it. The clipboard API and its session-lifetime contract are still being refined; a dedicated public usage example is planned.
+```text
+src/
+├── lib.rs                 Public API / re-exports
+├── virtual_file.rs        Name, size metadata, and source of one virtual file
+├── file_source.rs         FileSource trait
+├── source_reader.rs       Streaming / Seekable reader and size derivation
+├── factory_source.rs      Closure-based FileSource implementation
+├── error.rs               Public error types
+├── windows.rs             Windows module entry point and OLE initialization
+└── windows/
+    ├── data_object.rs     IDataObject; dispatch by format and file index
+    ├── formats.rs         File descriptor formats and STGMEDIUM construction
+    ├── stream.rs          IStream adapter around SourceReader
+    ├── drop_source.rs     IDropSource for the convenience drag operation
+    ├── drag_drop.rs       DoDragDrop integration
+    ├── clipboard.rs       OLE clipboard integration
+    └── error.rs           Windows error conversion
+
+examples/
+├── simple_drag.rs         Drag a file backed by in-memory data
+└── zip_drag.rs            Drag multiple ZIP entries without extracting first
+```
+
+The division is deliberate: `VirtualFile`, `FileSource`, and `SourceReader` don't know anything about Win32. The Windows backend translates them into the COM interfaces understood by the Shell. `FactorySource` is only a convenience adapter; users can implement `FileSource` directly.
+
+In the Windows backend, `IDataObject::GetData` returns either the group of file descriptors or a new `IStream` for the requested file index. `IStream::Read` forwards to the source reader. `IStream::Seek` is available only when the source reader supports it.
 
 ## Examples
-
-From the repository root:
 
 ```powershell
 cargo test
@@ -129,55 +132,28 @@ cargo run --example simple_drag
 cargo run --example zip_drag
 ```
 
-For `zip_drag`, place a `sample.zip` in the working directory containing `hello.txt` and `world.txt` (or adjust the paths in the example). Drag from the example window into Explorer to verify that both extracted files have the expected contents.
+Both drag examples open a window. Press and hold the left mouse button in that window, then drop into Explorer.
 
-The ZIP example lives outside the library core. It uses a ZIP reader adapter whose archive and entry remain alive while the target reads. **The ZIP entries are not fully decompressed into temporary files or a `Vec<u8>` before transfer.** Archive metadata is read first; entry contents are decompressed incrementally when requested.
+The ZIP example currently expects `sample.zip` in the working directory containing `hello.txt` and `world.txt`. When run from the repository root with `cargo run`, put the ZIP there (or change the paths in the example).
 
-ZIP and HTTP providers are **not built-in public adapters**. Applications can supply their own `FileSource` implementations, and future adapters may be developed separately.
+The ZIP implementation lives **only in the example**. It reads entry metadata first, but it does not extract the file contents to a `Vec<u8>` or a temporary file before transfer. `LazyZipEntryReader` keeps the archive and ZIP entry alive while `Read` decompresses data on demand. Its ZIP-specific dependencies are not part of the library's core API.
 
-## How it works on Windows
+## Current state and limitations
 
-PromisedFile implements an OLE `IDataObject` that advertises:
+Working paths have been exercised with Windows Explorer: single and multiple virtual files, clipboard transfer, seekable and streaming readers with known sizes, and seekable readers with derived sizes. The ZIP example exercises lazy decompression through the same interfaces.
 
-- `CFSTR_FILEDESCRIPTORW`: names and available metadata for the virtual files.
-- `CFSTR_FILECONTENTS`: a file's content, returned as `TYMED_ISTREAM` for the requested `lindex`.
+This is not yet a compatibility-tested replacement for every Windows drag-and-drop implementation. In particular:
 
-Each request for content opens a reader for the corresponding `VirtualFile`. This allows multiple files and repeated content requests without requiring an up-front filesystem export.
+- Behavior with targets other than Explorer needs broader testing.
+- Unknown-size, non-seekable streams are limited as described above.
+- Some `IStream` methods, including `CopyTo` and `Clone`, are not implemented.
+- Large transfers, cancellation, error propagation, and source-process lifetime need more testing.
+- Reads are synchronous. A source backed by network I/O may block while supplying data.
 
-The library's responsibilities stop at representing and delivering the virtual files. It does not intercept drag-and-drop globally or require applications to surrender control of their complete drag-and-drop workflow.
+## Next steps
 
-## Limitations
+Near term: improve COM compatibility tests, harden error handling and file-name validation, document clipboard lifetime behavior, and refine the lower-level `IDataObject` API so applications can retain control of their own drag-and-drop flow.
 
-- **Windows-only** at present; cross-platform support is a goal, not a current feature.
-- **Early-stage compatibility:** Successful Explorer transfers have been tested, but compatibility across other drag-and-drop and clipboard consumers has not been comprehensively validated.
-- **Unknown-length streaming:** Non-seekable readers without a known size have limited interoperability, especially with consumers that query `IStream::Stat` or require seeking.
-- **Incomplete `IStream` surface:** Some optional COM stream operations, such as `Clone` and `CopyTo`, are not yet implemented.
-- **Synchronous reads:** Content providers currently expose synchronous Rust `Read` behavior; asynchronous and remote-I/O integration need further design.
-- **Source lifetime:** The providing process must stay alive while lazy data is being requested. Source implementations are responsible for reopening their data and managing their own external resources.
-- **No blanket zero-copy guarantee:** PromisedFile avoids staging files, but individual providers may buffer, allocate, or cache content.
+Later: a C ABI and optional C++/C# wrappers, a strategy for unknown-length streaming, and a macOS backend. ZIP and HTTP integrations are candidates for separate adapters rather than required dependencies of the core crate.
 
-## Roadmap
-
-These are directions for future work, not promises of release dates.
-
-- [ ] Harden Windows COM contracts, error handling, validation, and ownership/lifetime behavior.
-- [ ] Test more Windows targets and large-file, multi-file, cancellation, and repeated-request scenarios.
-- [ ] Refine the public Windows `IDataObject` integration API without taking over an application's drag lifecycle.
-- [ ] Document and stabilize clipboard session behavior.
-- [ ] Define an explicit strategy for unknown-size, non-seekable streams (including optional buffering/spooling if appropriate).
-- [ ] Improve asynchronous and remote-source interoperability.
-- [ ] Provide a C ABI, then optional C++ and C# bindings.
-- [ ] Explore a macOS backend using native file-promise mechanisms.
-- [ ] Expand examples and documentation; consider separate ZIP/HTTP adapters where useful.
-
-## Design principles
-
-1. **No mandatory temporary-file staging.** Prefer demand-driven streaming into the receiving application.
-2. **Keep sources independent of transfer mechanics.** A `FileSource` supplies bytes; platform backends expose them as transferable files.
-3. **Do not take over the host application's drag-and-drop design.** Offer both convenience helpers and lower-level integration points.
-4. **Keep the core focused.** Archive formats, HTTP clients, cloud SDKs, and UI frameworks belong in examples or optional adapters, not mandatory core dependencies.
-5. **Be explicit about limitations.** File-size knowledge, seekability, consumer compatibility, and process lifetime affect correctness.
-
-## Contributing
-
-The project is experimental and evolving. Bug reports, compatibility findings, and focused improvements are welcome. When reporting a transfer issue, include the receiving application, whether the source is seekable, whether its size is known, and the expected versus actual behavior.
+There is no release schedule for these items.
