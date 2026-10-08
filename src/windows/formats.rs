@@ -1,15 +1,16 @@
+use crate::Result;
 use std::mem::{ManuallyDrop, size_of};
 
 use std::ptr;
 
 use std::sync::OnceLock;
 
-use windows::Win32::Foundation::GlobalFree;
+use windows::Win32::Foundation::{E_INVALIDARG, GlobalFree, MAX_PATH};
 use windows::Win32::System::Com::{STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL};
 use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
 use windows::Win32::UI::Shell::{FD_FILESIZE, FD_UNICODE, FILEDESCRIPTORW};
-use windows::core::{Error, Result, w};
+use windows::core::{Error as WindowsError, Result as WindowsResult, w};
 
 pub(crate) struct FileDescriptorMetadata<'a> {
     pub(crate) name: &'a str,
@@ -23,7 +24,7 @@ pub(crate) struct FileTransferFormats {
 
 static FORMATS: OnceLock<FileTransferFormats> = OnceLock::new();
 
-pub(crate) fn file_transfer_formats() -> Result<&'static FileTransferFormats> {
+pub(crate) fn file_transfer_formats() -> WindowsResult<&'static FileTransferFormats> {
     if let Some(formats) = FORMATS.get() {
         return Ok(formats);
     }
@@ -34,17 +35,17 @@ pub(crate) fn file_transfer_formats() -> Result<&'static FileTransferFormats> {
 }
 
 impl FileTransferFormats {
-    fn register() -> Result<Self> {
+    fn register() -> WindowsResult<Self> {
         let file_descriptor = unsafe { RegisterClipboardFormatW(w!("FileGroupDescriptorW")) };
 
         if file_descriptor == 0 {
-            return Err(Error::from_thread());
+            return Err(WindowsError::from_thread());
         }
 
         let file_contents = unsafe { RegisterClipboardFormatW(w!("FileContents")) };
 
         if file_contents == 0 {
-            return Err(Error::from_thread());
+            return Err(WindowsError::from_thread());
         }
 
         Ok(Self {
@@ -54,7 +55,10 @@ impl FileTransferFormats {
     }
 }
 
-fn create_file_descriptor(metadata: &FileDescriptorMetadata<'_>) -> FILEDESCRIPTORW {
+fn create_file_descriptor(metadata: &FileDescriptorMetadata<'_>) -> WindowsResult<FILEDESCRIPTORW> {
+    validate_file_name(metadata.name)
+        .map_err(|error| WindowsError::new(E_INVALIDARG, error.to_string()))?;
+
     let mut descriptor = FILEDESCRIPTORW::default();
 
     let mut flags = FD_UNICODE.0 as u32;
@@ -79,13 +83,16 @@ fn create_file_descriptor(metadata: &FileDescriptorMetadata<'_>) -> FILEDESCRIPT
 
     descriptor.cFileName = file_name;
 
-    descriptor
+    Ok(descriptor)
 }
 
 pub(crate) fn create_file_group_descriptor_medium(
     files: &[FileDescriptorMetadata<'_>],
-) -> Result<STGMEDIUM> {
-    let descriptors = files.iter().map(create_file_descriptor).collect::<Vec<_>>();
+) -> WindowsResult<STGMEDIUM> {
+    let descriptors = files
+        .iter()
+        .map(create_file_descriptor)
+        .collect::<WindowsResult<Vec<_>>>()?;
     let descriptors_size = descriptors.len() * size_of::<FILEDESCRIPTORW>();
 
     let byte_size = size_of::<u32>() + descriptors_size;
@@ -99,7 +106,7 @@ pub(crate) fn create_file_group_descriptor_medium(
             let _ = GlobalFree(Some(hglobal));
         }
 
-        return Err(Error::from_thread());
+        return Err(WindowsError::from_thread());
     }
 
     unsafe {
@@ -123,8 +130,20 @@ pub(crate) fn create_file_group_descriptor_medium(
     })
 }
 
+pub(crate) fn validate_file_name(name: &str) -> Result<()> {
+    if name.encode_utf16().count() >= MAX_PATH as usize {
+        return Err(crate::Error::Platform(crate::PlatformError::new(
+            crate::PlatformErrorKind::UnsupportedFileName,
+            format!("file name exceeds {} UTF-16 code units", MAX_PATH - 1),
+        )));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
+
     use super::*;
 
     #[test]
@@ -134,7 +153,7 @@ mod tests {
             size: Some(5),
         };
 
-        let descriptor = create_file_descriptor(&metadata);
+        let descriptor = create_file_descriptor(&metadata).unwrap();
 
         let size_high = descriptor.nFileSizeHigh;
         let size_low = descriptor.nFileSizeLow;
@@ -148,5 +167,13 @@ mod tests {
         let name = String::from_utf16(&file_name[..name_len]).unwrap();
 
         assert_eq!(name, "hello.txt");
+    }
+
+    #[test]
+    fn validates_file_name_length() {
+        assert!(validate_file_name(&"a".repeat(259)).is_ok());
+        assert!(validate_file_name(&"a".repeat(260)).is_err());
+
+        assert!(validate_file_name(&"😀".repeat(130)).is_err());
     }
 }

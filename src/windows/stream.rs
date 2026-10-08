@@ -1,5 +1,5 @@
 use crate::source_reader::{SourceReader, SourceReaderError};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::io::{Read, SeekFrom};
 use std::mem::ManuallyDrop;
@@ -19,6 +19,7 @@ use windows::core::{HRESULT, Ref, Result, implement};
 pub(crate) struct Stream {
     reader: RefCell<SourceReader>,
     size: Option<u64>,
+    current_position: Cell<u64>,
 }
 
 impl Stream {
@@ -26,6 +27,7 @@ impl Stream {
         Self {
             reader: RefCell::new(reader),
             size,
+            current_position: Cell::new(0),
         }
     }
 }
@@ -46,9 +48,7 @@ pub(crate) fn create_stream_medium(reader: SourceReader, size: Option<u64>) -> S
 impl ISequentialStream_Impl for Stream_Impl {
     fn Read(&self, pv: *mut c_void, cb: u32, pcbread: *mut u32) -> HRESULT {
         if !pcbread.is_null() {
-            unsafe {
-                *pcbread = 0;
-            }
+            unsafe { pcbread.write(0) };
         }
 
         if cb == 0 {
@@ -61,18 +61,60 @@ impl ISequentialStream_Impl for Stream_Impl {
 
         let buffer = unsafe { std::slice::from_raw_parts_mut(pv.cast::<u8>(), cb as usize) };
 
-        match self.reader.borrow_mut().read(buffer) {
-            Ok(read) => {
-                if !pcbread.is_null() {
-                    unsafe {
-                        *pcbread = read as u32;
-                    }
+        let mut total_length = 0usize;
+        let read_result: std::io::Result<()> = {
+            let mut reader = self.reader.borrow_mut();
+
+            loop {
+                if total_length == buffer.len() {
+                    break Ok(());
                 }
 
-                if read == cb as usize { S_OK } else { S_FALSE }
+                match reader.read(&mut buffer[total_length..]) {
+                    Ok(0) => break Ok(()),
+
+                    Ok(read_length) => {
+                        total_length += read_length;
+                    }
+
+                    Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {
+                        continue;
+                    }
+
+                    Err(error) => break Err(error),
+                }
+            }
+        };
+
+        let Some(read_position) = self.current_position.get().checked_add(total_length as u64)
+        else {
+            return STG_E_READFAULT;
+        };
+
+        self.current_position.set(read_position);
+
+        if !pcbread.is_null() {
+            unsafe { pcbread.write(total_length as u32) };
+        }
+
+        if let Err(_error) = read_result {
+            return STG_E_READFAULT;
+        }
+
+        if let Some(size) = self.size {
+            if total_length > 0 && read_position > size {
+                return STG_E_READFAULT;
             }
 
-            Err(_) => STG_E_READFAULT,
+            if total_length < buffer.len() && read_position < size {
+                return STG_E_READFAULT;
+            }
+        }
+
+        if total_length == buffer.len() {
+            S_OK
+        } else {
+            S_FALSE
         }
     }
 
@@ -104,6 +146,7 @@ impl IStream_Impl for Stream_Impl {
 
         match self.reader.borrow_mut().seek(seek_from) {
             Ok(position) => {
+                self.current_position.set(position);
                 if !plibnewposition.is_null() {
                     unsafe {
                         plibnewposition.write(position);
@@ -314,6 +357,7 @@ mod tests {
         assert_eq!(hr, S_OK);
         assert_eq!(&buffer, b"ll");
     }
+
     #[test]
     fn com_stream_seek_fails_for_streaming_reader() {
         let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
@@ -323,5 +367,49 @@ mod tests {
         let error = unsafe { stream.Seek(0, STREAM_SEEK_SET, None) }.unwrap_err();
 
         assert_eq!(error.code(), STG_E_INVALIDFUNCTION);
+    }
+
+    #[test]
+    fn read_fails_when_source_ends_before_declared_size() {
+        let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
+
+        let stream: IStream = Stream::new(reader, Some(10)).into();
+        let sequential: &ISequentialStream = (&stream).into();
+
+        let mut buffer = [0u8; 10];
+        let mut read = 0u32;
+
+        let hr = unsafe {
+            sequential.Read(
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                Some(&mut read),
+            )
+        };
+
+        assert_eq!(hr, STG_E_READFAULT);
+        assert_eq!(read, 5);
+    }
+
+    #[test]
+    fn read_tracks_position_across_calls() {
+        let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
+
+        let stream: IStream = Stream::new(reader, Some(10)).into();
+        let sequential: &ISequentialStream = (&stream).into();
+
+        let mut first = [0u8; 3];
+
+        let hr = unsafe { sequential.Read(first.as_mut_ptr().cast(), 3, None) };
+
+        assert_eq!(hr, S_OK);
+
+        let mut second = [0u8; 7];
+        let mut read = 0u32;
+
+        let hr = unsafe { sequential.Read(second.as_mut_ptr().cast(), 7, Some(&mut read)) };
+
+        assert_eq!(hr, STG_E_READFAULT);
+        assert_eq!(read, 2);
     }
 }

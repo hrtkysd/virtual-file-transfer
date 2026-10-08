@@ -20,11 +20,10 @@ use windows::core::{BOOL, Error as WindowsError, HRESULT, Ref, Result, implement
 enum DataRequest {
     FileDescriptor,
     FileContents(usize),
+    FileContentsUnspecified,
 }
 
-pub(crate) fn create_data_object(
-    files: Vec<VirtualFile>,
-) -> windows::core::Result<IDataObject> {
+pub(crate) fn create_data_object(files: Vec<VirtualFile>) -> windows::core::Result<IDataObject> {
     let object = DataObject::new(files)?;
     Ok(object.into())
 }
@@ -58,18 +57,18 @@ fn resolve_request(
     }
 
     if format_id == formats.file_contents {
-        if format.lindex < 0 {
-            return Err(DV_E_LINDEX);
+        if format.tymed & TYMED_ISTREAM.0 as u32 == 0 {
+            return Err(DV_E_TYMED);
         }
 
-        let index = format.lindex as usize;
+        let index = match format.lindex {
+            -1 => return Ok(DataRequest::FileContentsUnspecified),
+            index if index >= 0 => index as usize,
+            _ => return Err(DV_E_LINDEX),
+        };
 
         if index >= file_count {
             return Err(DV_E_LINDEX);
-        }
-
-        if format.tymed & TYMED_ISTREAM.0 as u32 == 0 {
-            return Err(DV_E_TYMED);
         }
 
         return Ok(DataRequest::FileContents(index));
@@ -122,6 +121,7 @@ impl IDataObject_Impl for DataObject_Impl {
 
                 Ok(create_stream_medium(reader, file.size()))
             }
+            DataRequest::FileContentsUnspecified => Err(DV_E_LINDEX.into()),
         }
     }
 
