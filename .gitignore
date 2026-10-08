@@ -1,0 +1,11 @@
+# Rust build output
+/target/
+
+# Visual Studio
+/.vs/
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
