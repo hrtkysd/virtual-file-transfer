@@ -1,8 +1,8 @@
-# promised-file
+# virtual-file-transfer
 
 Expose data as a file on Windows without writing it to a temporary file first.
 
-`promised-file` is a Rust library for Windows OLE virtual-file transfer. It lets an application offer data from memory, an archive, a generated report, or another source as files through drag-and-drop or the clipboard. The receiving application asks for the contents when it needs them.
+`virtual-file-transfer` is a Rust library for Windows OLE virtual-file transfer. It lets an application offer data from memory, an archive, a generated report, or another source as files through drag-and-drop or the clipboard. The receiving application asks for the contents when it needs them.
 
 The project is under development. Only Windows is implemented, and the API is not stable yet.
 
