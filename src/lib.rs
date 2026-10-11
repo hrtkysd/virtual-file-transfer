@@ -19,6 +19,7 @@ pub fn begin_drag(files: Vec<VirtualFile>) -> Result<()> {
 }
 
 #[cfg(windows)]
+#[must_use = "Keep this session alive while clipboard data is needed"]
 pub struct ClipboardSession {
     _inner: windows::ClipboardSession,
 }
