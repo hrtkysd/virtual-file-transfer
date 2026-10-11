@@ -17,7 +17,7 @@ struct MemorySource {
 
 impl FileSource for MemorySource {
     fn open(&self) -> io::Result<SourceReader> {
-        Ok(SourceReader::streaming(std::io::Cursor::new(
+        Ok(SourceReader::seekable(std::io::Cursor::new(
             self.data.clone(),
         )))
     }
