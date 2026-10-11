@@ -13,8 +13,7 @@ Normally, exporting a file that only exists inside an application means writing 
 On Windows, an `IDataObject` advertises `CFSTR_FILEDESCRIPTORW` (file names and metadata) and `CFSTR_FILECONTENTS` (file contents as an `IStream`). For multiple files, the receiving application selects the content by `FORMATETC::lindex`.
 
 ```text
-VirtualFile(s)
- [name, optional size, FileSource]
+VirtualFile(s) [name, optional size, FileSource]
     │
     ▼
 IDataObject ──► CFSTR_FILEDESCRIPTORW (metadata)
