@@ -100,7 +100,8 @@ fn create_zip_virtual_files(
 
         let source = ZipEntrySource::new(archive_path.clone(), *entry_name);
 
-        let file = virtual_file_transfer::VirtualFile::new(&file_name, Box::new(source))?.with_size(size);
+        let file =
+            virtual_file_transfer::VirtualFile::new(&file_name, Box::new(source))?.with_size(size);
 
         files.push(file);
     }
