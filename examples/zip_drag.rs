@@ -1,5 +1,5 @@
 use ouroboros::self_referencing;
-use promised_file::{FileSource, SourceReader, begin_drag};
+use virtual_file_transfer::{FileSource, SourceReader, begin_drag};
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -79,7 +79,7 @@ fn zip_error(error: zip::result::ZipError) -> io::Error {
 fn create_zip_virtual_files(
     archive_path: PathBuf,
     entry_names: &[&str],
-) -> std::result::Result<Vec<promised_file::VirtualFile>, Box<dyn std::error::Error>> {
+) -> std::result::Result<Vec<virtual_file_transfer::VirtualFile>, Box<dyn std::error::Error>> {
     let file = File::open(&archive_path)?;
     let mut archive = ZipArchive::new(file)?;
 
@@ -100,7 +100,7 @@ fn create_zip_virtual_files(
 
         let source = ZipEntrySource::new(archive_path.clone(), *entry_name);
 
-        let file = promised_file::VirtualFile::new(&file_name, Box::new(source))?.with_size(size);
+        let file = virtual_file_transfer::VirtualFile::new(&file_name, Box::new(source))?.with_size(size);
 
         files.push(file);
     }

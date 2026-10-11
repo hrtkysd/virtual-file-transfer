@@ -1,4 +1,4 @@
-use promised_file::{FileSource, SourceReader, VirtualFile, begin_drag};
+use virtual_file_transfer::{FileSource, SourceReader, VirtualFile, begin_drag};
 
 use std::io;
 
@@ -22,7 +22,7 @@ impl FileSource for MemorySource {
         )))
     }
 }
-fn begin_drag_example() -> promised_file::Result<()> {
+fn begin_drag_example() -> virtual_file_transfer::Result<()> {
     let files = vec![
         VirtualFile::new(
             "hello.txt",
