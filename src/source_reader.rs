@@ -30,6 +30,19 @@ impl SourceReader {
         Self::Seekable(Box::new(reader))
     }
 
+    #[cfg(feature = "spool")]
+    pub fn spooled<R>(mut reader: R) -> io::Result<Self>
+    where
+        R: Read + 'static,
+    {
+        let mut file = tempfile::tempfile()?;
+
+        io::copy(&mut reader, &mut file)?;
+        file.seek(SeekFrom::Start(0))?;
+
+        Ok(Self::Seekable(Box::new(file)))
+    }
+
     pub(crate) fn seek(&mut self, position: SeekFrom) -> Result<u64, SourceReaderError> {
         match self {
             Self::Seekable(reader) => reader.seek(position).map_err(|_| SourceReaderError::Io),

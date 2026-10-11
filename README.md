@@ -13,10 +13,10 @@ Normally, exporting a file that only exists inside an application means writing 
 On Windows, an `IDataObject` advertises `CFSTR_FILEDESCRIPTORW` (file names and metadata) and `CFSTR_FILECONTENTS` (file contents as an `IStream`). For multiple files, the receiving application selects the content by `FORMATETC::lindex`.
 
 ```text
-VirtualFile(s)  [name, optional size, FileSource]
+VirtualFile(s) [name, optional size, FileSource]
     │
     ▼
-IDataObject  ──► CFSTR_FILEDESCRIPTORW (metadata)
+IDataObject ──► CFSTR_FILEDESCRIPTORW (metadata)
     │
     └── GetData(CFSTR_FILECONTENTS, lindex)
             │
@@ -27,7 +27,7 @@ IDataObject  ──► CFSTR_FILEDESCRIPTORW (metadata)
         SourceReader ──► IStream::Read() ──► Receiving application
 ```
 
-The destination application may of course create a real file. What is avoided is *staging* that file on disk in the source application.
+The destination application may of course create a real file. What is avoided is **staging** that file on disk in the source application.
 
 This is not a virtual filesystem or a global drag-and-drop hook.
 
@@ -38,6 +38,13 @@ For local development:
 ```toml
 [dependencies]
 virtual-file-transfer = { path = "../virtual-file-transfer" }
+```
+
+To enable explicit spooling support:
+
+```toml
+[dependencies]
+virtual-file-transfer = { path = "../virtual-file-transfer", features = ["spool"] }
 ```
 
 A `VirtualFile` has a name, optional size, and a `FileSource`. A source must return a **new reader** each time `open()` is called; the receiving application is allowed to request the contents more than once.
@@ -71,16 +78,66 @@ pub trait FileSource {
 }
 ```
 
-There are two kinds of readers:
+There are two basic kinds of readers:
 
 ```rust
 SourceReader::seekable(reader)  // Read + Seek
 SourceReader::streaming(reader) // Read only
 ```
 
-If the size is already known, set it with `.with_size(size)`. If it isn't specified, a seekable reader can determine its length without changing its current position. A streaming reader can work without `Seek` as long as the file size is provided.
+If the size is already known, set it with `.with_size(size)`. If it isn't specified, a seekable reader can determine its length without changing its current position.
 
-**Known limitation:** a non-seekable reader with an unknown size cannot currently provide a meaningful `IStream::Stat::cbSize`. The current `Stat` implementation returns an error in that case. Support across receiving applications is therefore not guaranteed.
+A streaming reader can work without `Seek` as long as the file size is provided.
+
+| Source capabilities | Direct transfer | `IStream::Stat` | `IStream::Seek` | Spooling required |
+|---|---|---|---|---|
+| Known size + seekable | Yes | Supported | Supported | No |
+| Known size + non-seekable | Yes | Supported from supplied size | Not supported | No |
+| Unknown size + seekable | Yes | Supported by deriving the size | Supported | No |
+| Unknown size + non-seekable | Receiver-dependent | Size cannot be reported | Not supported | For receivers requiring size or seeking |
+
+#### Unknown-size, non-seekable sources
+
+A non-seekable reader whose size is unknown cannot provide a meaningful `IStream::Stat::cbSize` without first consuming or materializing the source.
+
+The library does not silently materialize such streams.
+
+With the current implementation, `SourceReader::streaming(reader)` remains a true sequential reader. If its size is not supplied separately, `IStream::Stat` returns an error when asked for the stream size.
+
+The currently tested Windows Explorer transfer path calls `IStream::Stat` and requires the size to be available, so an unknown-size, non-seekable source cannot currently be transferred directly to Explorer.
+
+If the size is available from source metadata, prefer supplying it explicitly:
+
+```rust
+let file = VirtualFile::new("data.bin", Box::new(source))?
+    .with_size(size);
+```
+
+This preserves direct streaming and does not require staging the contents first.
+
+#### Explicit spooling
+
+For a source that is both non-seekable and of unknown size, applications can explicitly trade temporary storage for broader receiver compatibility by enabling the `spool` feature:
+
+```toml
+virtual-file-transfer = { version = "0.1", features = ["spool"] }
+```
+
+Then create a spooled reader explicitly:
+
+```rust
+let reader = SourceReader::spooled(source)?;
+```
+
+Spooling consumes the complete source into temporary storage before transfer and exposes the result as a seekable reader. Its size can then be derived in the same way as any other seekable reader.
+
+| Reader | Temporary storage | Size available | Seekable |
+|---|---|---|---|
+| `SourceReader::streaming` | No | Only if supplied separately | No |
+| `SourceReader::seekable` | No | Derivable if not supplied | Yes |
+| `SourceReader::spooled` | Yes | Derivable | Yes |
+
+Spooling is always explicit. `virtual-file-transfer` does not automatically switch a streaming source to temporary storage in response to receiver behavior.
 
 ### Use your own drag-and-drop flow
 
@@ -138,6 +195,8 @@ The ZIP example currently expects `sample.zip` in the working directory containi
 
 The ZIP implementation lives **only in the example**. It reads entry metadata first, but it does not extract the file contents to a `Vec<u8>` or a temporary file before transfer. `LazyZipEntryReader` keeps the archive and ZIP entry alive while `Read` decompresses data on demand. Its ZIP-specific dependencies are not part of the library's core API.
 
+This is also an example of a known-size, non-seekable source: the ZIP reader itself is sequential, but the uncompressed entry size is available from ZIP metadata and is supplied to `VirtualFile`.
+
 ## Current state and limitations
 
 Working paths have been exercised with Windows Explorer: single and multiple virtual files, clipboard transfer, seekable and streaming readers with known sizes, and seekable readers with derived sizes. The ZIP example exercises lazy decompression through the same interfaces.
@@ -145,15 +204,16 @@ Working paths have been exercised with Windows Explorer: single and multiple vir
 This is not yet a compatibility-tested replacement for every Windows drag-and-drop implementation. In particular:
 
 - Behavior with targets other than Explorer needs broader testing.
-- Unknown-size, non-seekable streams are limited as described above.
+- Unknown-size, non-seekable streams cannot currently be transferred to the tested Explorer path without first making the size available, for example through explicit spooling.
 - Some `IStream` methods, including `CopyTo` and `Clone`, are not implemented.
 - Large transfers, cancellation, error propagation, and source-process lifetime need more testing.
 - Reads are synchronous. A source backed by network I/O may block while supplying data.
+- Explicit spooling trades temporary storage and startup latency for a determinable size and seekability.
 
 ## Next steps
 
-Near term: improve COM compatibility tests, harden error handling and file-name validation, document clipboard lifetime behavior, and refine the lower-level `IDataObject` API so applications can retain control of their own drag-and-drop flow.
+Near term: improve COM compatibility tests, harden error handling and file-name validation, test explicit spooling with large and failing sources, document clipboard lifetime behavior, and refine the lower-level `IDataObject` API so applications can retain control of their own drag-and-drop flow.
 
-Later: a C ABI and optional C++/C# wrappers, a strategy for unknown-length streaming, and a macOS backend. ZIP and HTTP integrations are candidates for separate adapters rather than required dependencies of the core crate.
+Later: a C ABI and optional C++/C# wrappers, cancellation support, and a macOS backend. ZIP and HTTP integrations are candidates for separate adapters rather than required dependencies of the core crate.
 
 There is no release schedule for these items.
