@@ -37,16 +37,16 @@ For local development:
 
 ```toml
 [dependencies]
-promised-file = { path = "../promised-file" }
+virtual-file-transfer = { path = "../virtual-file-transfer" }
 ```
 
 A `VirtualFile` has a name, optional size, and a `FileSource`. A source must return a **new reader** each time `open()` is called; the receiving application is allowed to request the contents more than once.
 
 ```rust
-use promised_file::{begin_drag, FactorySource, SourceReader, VirtualFile};
+use virtual_file_transfer::{begin_drag, FactorySource, SourceReader, VirtualFile};
 use std::io::Cursor;
 
-fn start_drag() -> promised_file::Result<()> {
+fn start_drag() -> virtual_file_transfer::Result<()> {
     let source = FactorySource::new(|| {
         Ok(SourceReader::seekable(Cursor::new(b"hello\n".to_vec())))
     });
@@ -89,7 +89,7 @@ If the size is already known, set it with `.with_size(size)`. If it isn't specif
 If the application already has its own `IDropSource`, drag effects, or `DoDragDrop` call, it can create just the data object:
 
 ```rust
-let data_object = promised_file::windows::create_data_object(files)?;
+let data_object = virtual_file_transfer::windows::create_data_object(files)?;
 // Use this IDataObject with your existing OLE drag-and-drop code.
 ```
 

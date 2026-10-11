@@ -1,5 +1,5 @@
 [package]
-name = "promised-file"
+name = "virtual-file-transfer"
 version = "0.1.0"
 edition = "2024"
 

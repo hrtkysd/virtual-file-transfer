@@ -1,6 +1,6 @@
 use std::io;
 
-use promised_file::{FileSource, SourceReader, VirtualFile, copy_to_clipboard};
+use virtual_file_transfer::{FileSource, SourceReader, VirtualFile, copy_to_clipboard};
 
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, MSG, TranslateMessage,
@@ -18,7 +18,7 @@ impl FileSource for MemorySource {
     }
 }
 
-fn main() -> promised_file::Result<()> {
+fn main() -> virtual_file_transfer::Result<()> {
     let files = vec![
         VirtualFile::new(
             "hello.txt",
