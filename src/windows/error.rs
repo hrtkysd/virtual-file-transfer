@@ -1,5 +1,4 @@
 use crate::{Error, PlatformError, PlatformErrorKind};
-use windows::core::Error as WindowsError;
 use windows::core::HRESULT;
 
 pub(crate) fn from_windows_error(kind: PlatformErrorKind, error: windows::core::Error) -> Error {

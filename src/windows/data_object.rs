@@ -18,9 +18,9 @@ use windows::Win32::UI::Shell::SHCreateStdEnumFmtEtc;
 use windows::core::{BOOL, Error as WindowsError, HRESULT, Ref, Result, implement};
 
 enum DataRequest {
-    FileDescriptor,
-    FileContents(usize),
-    FileContentsUnspecified,
+    Descriptor,
+    Contents(usize),
+    ContentsUnspecified,
 }
 
 pub(crate) fn create_data_object(files: Vec<VirtualFile>) -> windows::core::Result<IDataObject> {
@@ -36,7 +36,7 @@ fn resolve_request(
         return Err(DV_E_FORMATETC);
     };
 
-    if format.dwAspect != DVASPECT_CONTENT.0 as u32 {
+    if format.dwAspect != DVASPECT_CONTENT.0 {
         return Err(DV_E_DVASPECT);
     }
 
@@ -53,7 +53,7 @@ fn resolve_request(
             return Err(DV_E_TYMED);
         }
 
-        return Ok(DataRequest::FileDescriptor);
+        return Ok(DataRequest::Descriptor);
     }
 
     if format_id == formats.file_contents {
@@ -62,7 +62,7 @@ fn resolve_request(
         }
 
         let index = match format.lindex {
-            -1 => return Ok(DataRequest::FileContentsUnspecified),
+            -1 => return Ok(DataRequest::ContentsUnspecified),
             index if index >= 0 => index as usize,
             _ => return Err(DV_E_LINDEX),
         };
@@ -71,7 +71,7 @@ fn resolve_request(
             return Err(DV_E_LINDEX);
         }
 
-        return Ok(DataRequest::FileContents(index));
+        return Ok(DataRequest::Contents(index));
     }
 
     Err(DV_E_FORMATETC)
@@ -99,7 +99,7 @@ impl IDataObject_Impl for DataObject_Impl {
             resolve_request(format, self.files.len()).map_err(WindowsError::from_hresult)?;
 
         match request {
-            DataRequest::FileDescriptor => {
+            DataRequest::Descriptor => {
                 let descriptors = self
                     .files
                     .iter()
@@ -112,7 +112,7 @@ impl IDataObject_Impl for DataObject_Impl {
                 create_file_group_descriptor_medium(&descriptors)
             }
 
-            DataRequest::FileContents(index) => {
+            DataRequest::Contents(index) => {
                 let file = &self.files[index];
 
                 let reader = file
@@ -121,7 +121,7 @@ impl IDataObject_Impl for DataObject_Impl {
 
                 Ok(create_stream_medium(reader, file.size()))
             }
-            DataRequest::FileContentsUnspecified => Err(DV_E_LINDEX.into()),
+            DataRequest::ContentsUnspecified => Err(DV_E_LINDEX.into()),
         }
     }
 
@@ -164,14 +164,14 @@ impl IDataObject_Impl for DataObject_Impl {
             FORMATETC {
                 cfFormat: formats.file_descriptor as u16,
                 ptd: std::ptr::null_mut(),
-                dwAspect: DVASPECT_CONTENT.0 as u32,
+                dwAspect: DVASPECT_CONTENT.0,
                 lindex: -1,
                 tymed: TYMED_HGLOBAL.0 as u32,
             },
             FORMATETC {
                 cfFormat: formats.file_contents as u16,
                 ptd: std::ptr::null_mut(),
-                dwAspect: DVASPECT_CONTENT.0 as u32,
+                dwAspect: DVASPECT_CONTENT.0,
                 lindex: 0,
                 tymed: TYMED_ISTREAM.0 as u32,
             },

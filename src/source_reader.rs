@@ -12,7 +12,7 @@ pub enum SourceReader {
 #[derive(Debug)]
 pub(crate) enum SourceReaderError {
     NotSeekable,
-    Io(io::Error),
+    Io,
 }
 
 impl SourceReader {
@@ -30,9 +30,9 @@ impl SourceReader {
         Self::Seekable(Box::new(reader))
     }
 
-    pub(crate) fn seek(&mut self, position: std::io::SeekFrom) -> Result<u64, SourceReaderError> {
+    pub(crate) fn seek(&mut self, position: SeekFrom) -> Result<u64, SourceReaderError> {
         match self {
-            Self::Seekable(reader) => reader.seek(position).map_err(SourceReaderError::Io),
+            Self::Seekable(reader) => reader.seek(position).map_err(|_| SourceReaderError::Io),
 
             Self::Streaming(_) => Err(SourceReaderError::NotSeekable),
         }
@@ -43,7 +43,7 @@ impl SourceReader {
             Self::Streaming(_) => Ok(None),
 
             Self::Seekable(reader) => {
-                let current = reader.seek(SeekFrom::Current(0))?;
+                let current = reader.stream_position()?;
                 let size = reader.seek(SeekFrom::End(0))?;
                 reader.seek(SeekFrom::Start(current))?;
 
@@ -61,9 +61,11 @@ impl Read for SourceReader {
         }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn streaming_reader_is_not_seekable() {
         let mut reader = SourceReader::streaming(std::io::Cursor::new(b"hello".to_vec()));

@@ -158,7 +158,7 @@ impl IStream_Impl for Stream_Impl {
 
             Err(SourceReaderError::NotSeekable) => Err(STG_E_INVALIDFUNCTION.into()),
 
-            Err(SourceReaderError::Io(_)) => Err(STG_E_SEEKERROR.into()),
+            Err(SourceReaderError::Io) => Err(STG_E_SEEKERROR.into()),
         }
     }
 
@@ -197,22 +197,23 @@ impl IStream_Impl for Stream_Impl {
             return Err(STG_E_INVALIDPOINTER.into());
         }
 
-        let mut stat = STATSTG::default();
-
-        stat.r#type = STGTY_STREAM.0 as u32;
-        stat.grfMode = STGM_READ;
-        stat.cbSize = match self.size {
+        let size = match self.size {
             Some(size) => size,
             None => {
                 let mut reader = self.reader.borrow_mut();
 
                 match reader.try_size()? {
                     Some(size) => size,
-                    None => {
-                        return Err(STG_E_INVALIDFUNCTION.into());
-                    }
+                    None => return Err(STG_E_INVALIDFUNCTION.into()),
                 }
             }
+        };
+
+        let stat = STATSTG {
+            r#type: STGTY_STREAM.0 as u32,
+            grfMode: STGM_READ,
+            cbSize: size,
+            ..Default::default()
         };
 
         unsafe {

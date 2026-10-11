@@ -1,5 +1,5 @@
 use crate::{FileSource, SourceReader};
-use std::io::{self, Read};
+use std::io;
 
 pub struct FactorySource<F> {
     open: F,
@@ -23,6 +23,7 @@ where
 mod tests {
 
     use super::*;
+    use std::io::Read;
 
     #[test]
     fn factory_source_opens_reader() {
