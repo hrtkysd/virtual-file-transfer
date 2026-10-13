@@ -5,8 +5,8 @@ pub trait ReadSeek: Read + Seek {}
 impl<T> ReadSeek for T where T: Read + Seek {}
 
 pub enum SourceReader {
-    Streaming(Box<dyn Read>),
-    Seekable(Box<dyn ReadSeek>),
+    Streaming(Box<dyn Read + Send>),
+    Seekable(Box<dyn ReadSeek + Send>),
 }
 
 #[derive(Debug)]
@@ -18,14 +18,14 @@ pub(crate) enum SourceReaderError {
 impl SourceReader {
     pub fn streaming<R>(reader: R) -> Self
     where
-        R: Read + 'static,
+        R: Read + Send + 'static,
     {
         Self::Streaming(Box::new(reader))
     }
 
     pub fn seekable<R>(reader: R) -> Self
     where
-        R: Read + Seek + 'static,
+        R: Read + Seek + Send + 'static,
     {
         Self::Seekable(Box::new(reader))
     }
@@ -33,7 +33,7 @@ impl SourceReader {
     #[cfg(feature = "spool")]
     pub fn spooled<R>(mut reader: R) -> io::Result<Self>
     where
-        R: Read + 'static,
+        R: Read + Send + 'static,
     {
         let mut file = tempfile::tempfile()?;
 
