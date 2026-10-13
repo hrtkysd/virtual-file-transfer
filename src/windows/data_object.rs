@@ -1,10 +1,16 @@
+mod async_operation;
+
 use super::formats::{
     FileDescriptorMetadata, create_file_group_descriptor_medium, file_transfer_formats,
 };
-
 use super::stream::create_stream_medium;
 
+use self::async_operation::AsyncState;
+
+use crate::transfer::TransferCompletion;
 use crate::virtual_file::VirtualFile;
+
+use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{
     DV_E_DVASPECT, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_FAIL, E_INVALIDARG, E_NOTIMPL,
@@ -14,7 +20,7 @@ use windows::Win32::System::Com::{
     DATADIR_GET, DVASPECT_CONTENT, FORMATETC, IAdviseSink, IDataObject, IDataObject_Impl,
     IEnumFORMATETC, IEnumSTATDATA, STGMEDIUM, TYMED_HGLOBAL, TYMED_ISTREAM,
 };
-use windows::Win32::UI::Shell::SHCreateStdEnumFmtEtc;
+use windows::Win32::UI::Shell::{IDataObjectAsyncCapability, SHCreateStdEnumFmtEtc};
 use windows::core::{BOOL, Error as WindowsError, HRESULT, Ref, Result, implement};
 
 enum DataRequest {
@@ -77,9 +83,11 @@ fn resolve_request(
     Err(DV_E_FORMATETC)
 }
 
-#[implement(IDataObject)]
+#[implement(IDataObject, IDataObjectAsyncCapability)]
 pub(crate) struct DataObject {
     files: Vec<VirtualFile>,
+    async_state: Mutex<AsyncState>,
+    completion: Arc<TransferCompletion>,
 }
 
 impl DataObject {
@@ -88,7 +96,34 @@ impl DataObject {
             return Err(E_INVALIDARG.into());
         }
 
-        Ok(Self { files })
+        Ok(Self {
+            files,
+            async_state: Mutex::new(AsyncState::default()),
+            completion: Arc::new(TransferCompletion::new()),
+        })
+    }
+
+    pub(crate) fn completion(&self) -> Arc<TransferCompletion> {
+        Arc::clone(&self.completion)
+    }
+
+    pub(crate) fn finish_without_async(&self) -> Result<()> {
+        let released = {
+            let mut state = self
+                .async_state
+                .lock()
+                .map_err(|_| WindowsError::from(E_FAIL))?;
+
+            if state.in_operation {
+                return Ok(());
+            }
+
+            state.enabled = false;
+            state.self_ref.take()
+        };
+
+        drop(released);
+        Ok(())
     }
 }
 

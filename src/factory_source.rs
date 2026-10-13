@@ -5,7 +5,10 @@ pub struct FactorySource<F> {
     open: F,
 }
 
-impl<F> FactorySource<F> {
+impl<F> FactorySource<F>
+where
+    F: Fn() -> io::Result<SourceReader> + Send + Sync,
+{
     pub fn new(open: F) -> Self {
         Self { open }
     }
@@ -13,12 +16,13 @@ impl<F> FactorySource<F> {
 
 impl<F> FileSource for FactorySource<F>
 where
-    F: Fn() -> io::Result<SourceReader>,
+    F: Fn() -> io::Result<SourceReader> + Send + Sync,
 {
     fn open(&self) -> io::Result<SourceReader> {
         (self.open)()
     }
 }
+
 #[cfg(test)]
 mod tests {
 

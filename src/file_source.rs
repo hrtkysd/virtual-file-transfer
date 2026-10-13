@@ -1,7 +1,7 @@
 use crate::source_reader::SourceReader;
 use std::io;
 
-pub trait FileSource {
+pub trait FileSource: Send + Sync {
     fn open(&self) -> io::Result<SourceReader>;
 }
 

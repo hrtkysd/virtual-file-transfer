@@ -2,6 +2,7 @@ mod error;
 mod factory_source;
 mod file_source;
 mod source_reader;
+mod transfer;
 mod virtual_file;
 
 #[cfg(windows)]
@@ -11,10 +12,11 @@ pub use error::{Error, InputError, PlatformError, PlatformErrorKind, Result};
 pub use factory_source::FactorySource;
 pub use file_source::FileSource;
 pub use source_reader::SourceReader;
+pub use transfer::{TransferHandle, TransferStatus};
 pub use virtual_file::VirtualFile;
 
 #[cfg(windows)]
-pub fn begin_drag(files: Vec<VirtualFile>) -> Result<()> {
+pub fn begin_drag(files: Vec<VirtualFile>) -> Result<TransferHandle> {
     windows::begin_drag(files)
 }
 

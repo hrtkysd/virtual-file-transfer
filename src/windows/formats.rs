@@ -103,7 +103,7 @@ pub(crate) fn create_file_group_descriptor_medium(
 
     if destination.is_null() {
         unsafe {
-            let _ = GlobalFree(Some(hglobal));
+            _ = GlobalFree(Some(hglobal));
         }
 
         return Err(WindowsError::from_thread());
@@ -118,7 +118,7 @@ pub(crate) fn create_file_group_descriptor_medium(
             descriptors_size,
         );
 
-        let _ = GlobalUnlock(hglobal);
+        _ = GlobalUnlock(hglobal);
     }
 
     Ok(STGMEDIUM {

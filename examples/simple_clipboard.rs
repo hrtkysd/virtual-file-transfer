@@ -52,7 +52,7 @@ fn main() -> virtual_file_transfer::Result<()> {
         }
 
         unsafe {
-            let _ = TranslateMessage(&message);
+            _ = TranslateMessage(&message);
             DispatchMessageW(&message);
         }
     }

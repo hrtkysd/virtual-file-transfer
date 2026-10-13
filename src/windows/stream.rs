@@ -1,8 +1,8 @@
 use crate::source_reader::{SourceReader, SourceReaderError};
-use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
 use std::io::{Read, SeekFrom};
 use std::mem::ManuallyDrop;
+use std::sync::Mutex;
 
 use windows::Win32::Foundation::{
     E_NOTIMPL, S_FALSE, S_OK, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION, STG_E_INVALIDPOINTER,
@@ -15,19 +15,25 @@ use windows::Win32::System::Com::{
 };
 use windows::core::{HRESULT, Ref, Result, implement};
 
+struct StreamState {
+    reader: SourceReader,
+    current_position: u64,
+}
+
 #[implement(IStream)]
 pub(crate) struct Stream {
-    reader: RefCell<SourceReader>,
     size: Option<u64>,
-    current_position: Cell<u64>,
+    state: Mutex<StreamState>,
 }
 
 impl Stream {
     pub(crate) fn new(reader: SourceReader, size: Option<u64>) -> Self {
         Self {
-            reader: RefCell::new(reader),
             size,
-            current_position: Cell::new(0),
+            state: Mutex::new(StreamState {
+                reader,
+                current_position: 0,
+            }),
         }
     }
 }
@@ -62,15 +68,17 @@ impl ISequentialStream_Impl for Stream_Impl {
         let buffer = unsafe { std::slice::from_raw_parts_mut(pv.cast::<u8>(), cb as usize) };
 
         let mut total_length = 0usize;
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return STG_E_READFAULT,
+        };
         let read_result: std::io::Result<()> = {
-            let mut reader = self.reader.borrow_mut();
-
             loop {
                 if total_length == buffer.len() {
                     break Ok(());
                 }
 
-                match reader.read(&mut buffer[total_length..]) {
+                match state.reader.read(&mut buffer[total_length..]) {
                     Ok(0) => break Ok(()),
 
                     Ok(read_length) => {
@@ -86,16 +94,15 @@ impl ISequentialStream_Impl for Stream_Impl {
             }
         };
 
-        let Some(read_position) = self.current_position.get().checked_add(total_length as u64)
-        else {
-            return STG_E_READFAULT;
-        };
-
-        self.current_position.set(read_position);
-
         if !pcbread.is_null() {
             unsafe { pcbread.write(total_length as u32) };
         }
+
+        let Some(read_position) = state.current_position.checked_add(total_length as u64) else {
+            return STG_E_READFAULT;
+        };
+
+        state.current_position = read_position;
 
         if let Err(_error) = read_result {
             return STG_E_READFAULT;
@@ -143,10 +150,13 @@ impl IStream_Impl for Stream_Impl {
                 return Err(STG_E_INVALIDFUNCTION.into());
             }
         };
-
-        match self.reader.borrow_mut().seek(seek_from) {
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return Err(STG_E_READFAULT.into()),
+        };
+        match state.reader.seek(seek_from) {
             Ok(position) => {
-                self.current_position.set(position);
+                state.current_position = position;
                 if !plibnewposition.is_null() {
                     unsafe {
                         plibnewposition.write(position);
@@ -197,16 +207,17 @@ impl IStream_Impl for Stream_Impl {
             return Err(STG_E_INVALIDPOINTER.into());
         }
 
+        let mut state = match self.state.lock() {
+            Ok(state) => state,
+            Err(_) => return Err(STG_E_READFAULT.into()),
+        };
+
         let size = match self.size {
             Some(size) => size,
-            None => {
-                let mut reader = self.reader.borrow_mut();
-
-                match reader.try_size()? {
-                    Some(size) => size,
-                    None => return Err(STG_E_INVALIDFUNCTION.into()),
-                }
-            }
+            None => match state.reader.try_size()? {
+                Some(size) => size,
+                None => return Err(STG_E_INVALIDFUNCTION.into()),
+            },
         };
 
         let stat = STATSTG {
