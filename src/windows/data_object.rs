@@ -7,7 +7,8 @@ use super::stream::create_stream_medium;
 
 use self::async_operation::AsyncState;
 
-use crate::transfer::TransferCompletion;
+use crate::cancellation::CancellationToken;
+use crate::transfer::{TransferCompletion, TransferRequest};
 use crate::virtual_file::VirtualFile;
 
 use std::sync::{Arc, Mutex};
@@ -29,9 +30,15 @@ enum DataRequest {
     ContentsUnspecified,
 }
 
-pub(crate) fn create_data_object(files: Vec<VirtualFile>) -> windows::core::Result<IDataObject> {
-    let object = DataObject::new(files)?;
-    Ok(object.into())
+pub(crate) fn create_data_object(request: TransferRequest) -> windows::core::Result<IDataObject> {
+    let TransferRequest {
+        files,
+        cancellation,
+    } = request;
+
+    let data_object: IDataObject = DataObject::new(files, cancellation, None)?.into();
+
+    Ok(data_object)
 }
 
 fn resolve_request(
@@ -87,11 +94,16 @@ fn resolve_request(
 pub(crate) struct DataObject {
     files: Vec<VirtualFile>,
     async_state: Mutex<AsyncState>,
-    completion: Arc<TransferCompletion>,
+    token: CancellationToken,
+    completion: Option<Arc<TransferCompletion>>,
 }
 
 impl DataObject {
-    pub(crate) fn new(files: Vec<VirtualFile>) -> Result<Self> {
+    pub(crate) fn new(
+        files: Vec<VirtualFile>,
+        token: CancellationToken,
+        completion: Option<Arc<TransferCompletion>>,
+    ) -> Result<Self> {
         if files.is_empty() {
             return Err(E_INVALIDARG.into());
         }
@@ -99,12 +111,9 @@ impl DataObject {
         Ok(Self {
             files,
             async_state: Mutex::new(AsyncState::default()),
-            completion: Arc::new(TransferCompletion::new()),
+            token,
+            completion,
         })
-    }
-
-    pub(crate) fn completion(&self) -> Arc<TransferCompletion> {
-        Arc::clone(&self.completion)
     }
 
     pub(crate) fn finish_without_async(&self) -> Result<()> {
@@ -154,7 +163,12 @@ impl IDataObject_Impl for DataObject_Impl {
                     .open()
                     .map_err(|error| WindowsError::new(E_FAIL, error.to_string()))?;
 
-                Ok(create_stream_medium(reader, file.size()))
+                Ok(create_stream_medium(
+                    reader,
+                    file.size(),
+                    self.token.clone(),
+                    self.completion.clone(),
+                ))
             }
             DataRequest::ContentsUnspecified => Err(DV_E_LINDEX.into()),
         }
@@ -238,7 +252,14 @@ mod tests {
     use super::*;
     use std::io;
 
+    use crate::cancellation::CancellationToken;
     use crate::{FileSource, SourceReader};
+
+    use windows::Win32::Foundation::E_ABORT;
+    use windows::Win32::System::Com::{
+        DVASPECT_CONTENT, FORMATETC, IDataObject, ISequentialStream, TYMED_ISTREAM,
+    };
+    use windows::Win32::System::Ole::ReleaseStgMedium;
 
     struct StubSource;
 
@@ -254,8 +275,55 @@ mod tests {
     fn create_data_object() {
         let file = VirtualFile::new("hello.txt", Box::new(StubSource)).unwrap();
 
-        let object = DataObject::new(vec![file]).unwrap();
+        let object = DataObject::new(vec![file], CancellationToken::new(), None).unwrap();
 
         let _object: IDataObject = object.into();
+    }
+
+    #[test]
+    fn cancellation_propagates_to_content_stream() {
+        let token = CancellationToken::new();
+
+        let file = VirtualFile::new("hello.txt", Box::new(StubSource)).unwrap();
+
+        let data_object: IDataObject = DataObject::new(vec![file], token.clone(), None)
+            .unwrap()
+            .into();
+
+        let format = FORMATETC {
+            cfFormat: file_transfer_formats().unwrap().file_contents as u16,
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: 0,
+            tymed: TYMED_ISTREAM.0 as u32,
+        };
+
+        let mut medium = unsafe { data_object.GetData(&format) }.unwrap();
+
+        assert_eq!(medium.tymed, TYMED_ISTREAM.0 as u32);
+
+        let stream = unsafe { (&*medium.u.pstm).as_ref().unwrap().clone() };
+
+        unsafe {
+            ReleaseStgMedium(&mut medium);
+        }
+
+        let sequential: &ISequentialStream = (&stream).into();
+
+        token.cancel();
+
+        let mut buffer = [0u8; 5];
+        let mut bytes_read = u32::MAX;
+
+        let hr = unsafe {
+            sequential.Read(
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                Some(&mut bytes_read),
+            )
+        };
+
+        assert_eq!(hr, E_ABORT);
+        assert_eq!(bytes_read, 0);
     }
 }

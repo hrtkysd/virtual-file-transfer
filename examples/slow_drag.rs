@@ -1,12 +1,15 @@
 use std::{
     cell::RefCell,
     io::{self, Read},
-    thread,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
-
 use virtual_file_transfer::{
-    FactorySource, SourceReader, TransferHandle, TransferStatus, VirtualFile, begin_drag,
+    FactorySource, SourceReader, TransferHandle, TransferRequest, TransferStatus, VirtualFile,
+    begin_drag,
 };
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT, TextOutW};
@@ -29,6 +32,7 @@ const TIMER_ID: usize = 1;
 
 struct SlowReader {
     remaining: u64,
+    read_started: Arc<AtomicBool>,
 }
 
 impl Read for SlowReader {
@@ -39,27 +43,33 @@ impl Read for SlowReader {
             return Ok(0);
         }
 
-        thread::sleep(READ_DELAY);
+        self.read_started.store(true, Ordering::Release);
+
+        std::thread::sleep(READ_DELAY);
+
         buffer[..count].fill(b'X');
         self.remaining -= count as u64;
 
-        eprintln!(
-            "[SlowReader] thread={:?}, bytes={count}, remaining={}",
-            thread::current().id(),
-            self.remaining,
-        );
+        eprintln!("[SlowReader] bytes={count}, remaining={}", self.remaining);
+
         Ok(count)
     }
 }
 
 fn start_drag() -> virtual_file_transfer::Result<TransferHandle> {
-    let source = FactorySource::new(|| {
+    let read_started = Arc::new(AtomicBool::new(false));
+    let reader_started = Arc::clone(&read_started);
+
+    let source = FactorySource::new(move || {
         Ok(SourceReader::streaming(SlowReader {
             remaining: FILE_SIZE,
+            read_started: Arc::clone(&reader_started),
         }))
     });
+
     let file = VirtualFile::new("slow-test.bin", Box::new(source))?.with_size(FILE_SIZE);
-    begin_drag(vec![file])
+
+    begin_drag(TransferRequest::new(vec![file]))
 }
 
 #[derive(Default)]
@@ -149,6 +159,13 @@ unsafe extern "system" fn window_proc(
         }
         WM_RBUTTONDOWN => {
             STATE.with(|state| state.borrow_mut().right_clicks += 1);
+            // Uncomment to test cancellation during an asynchronous transfer.
+            // Cancellation aborts the current transfer and cannot be undone.
+            //STATE.with(|state| {
+            //    if let Some(handle) = state.borrow().transfer.as_ref() {
+            //        handle.cancel();
+            //    }
+            //});
             refresh(hwnd);
             LRESULT(0)
         }

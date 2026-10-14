@@ -3,25 +3,31 @@ use super::data_object::DataObject;
 use super::drop_source::DropSource;
 use super::error::{from_hresult, from_windows_error};
 
-use crate::transfer::{TransferHandle, TransferStatus};
-use crate::{PlatformErrorKind, Result, VirtualFile};
+use crate::transfer::{TransferCompletion, TransferHandle, TransferRequest, TransferStatus};
+use crate::{PlatformErrorKind, Result};
 
-use windows::Win32::Foundation::{DRAGDROP_S_CANCEL, E_FAIL};
+use std::sync::Arc;
+
+use windows::Win32::Foundation::{DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, E_FAIL};
 use windows::Win32::System::Com::IDataObject;
 use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_NONE, DoDragDrop, IDropSource};
 use windows::Win32::UI::Shell::IDataObjectAsyncCapability;
 use windows::core::{ComObject, Error as WindowsError};
 
-pub(crate) fn begin_drag(files: Vec<VirtualFile>) -> Result<TransferHandle> {
+pub(crate) fn begin_drag(request: TransferRequest) -> Result<TransferHandle> {
     let _ole = OleContext::new()
         .map_err(|error| from_windows_error(PlatformErrorKind::InitializationFailed, error))?;
+    let TransferRequest {
+        files,
+        cancellation: token,
+    } = request;
+
+    let completion = Arc::new(TransferCompletion::new());
 
     let object = ComObject::new(
-        DataObject::new(files)
-            .map_err(|error| from_windows_error(PlatformErrorKind::InitializationFailed, error))?,
+        DataObject::new(files, token.clone(), Some(Arc::clone(&completion)))
+            .map_err(|error| from_windows_error(PlatformErrorKind::TransferFailed, error))?,
     );
-
-    let completion = object.get().completion();
 
     let data_object: IDataObject = object.to_interface();
     let async_capability: IDataObjectAsyncCapability = object.to_interface();
@@ -42,10 +48,10 @@ pub(crate) fn begin_drag(files: Vec<VirtualFile>) -> Result<TransferHandle> {
 
         let status = if result == DRAGDROP_S_CANCEL {
             TransferStatus::Cancelled
-        } else if result.is_err() {
-            TransferStatus::Failed
-        } else {
+        } else if result == DRAGDROP_S_DROP {
             TransferStatus::Dropped
+        } else {
+            TransferStatus::Failed
         };
 
         let record_result = completion.record_if_pending(status);
@@ -59,11 +65,15 @@ pub(crate) fn begin_drag(files: Vec<VirtualFile>) -> Result<TransferHandle> {
                 WindowsError::from(E_FAIL),
             )
         })?;
+        eprintln!(
+            "[DnD] DoDragDrop={result:?}, final status={:?}",
+            completion.status()
+        );
     }
 
     if result.is_err() {
         return Err(from_hresult(PlatformErrorKind::TransferFailed, result));
     }
 
-    Ok(TransferHandle::new(completion))
+    Ok(TransferHandle::new(completion, token))
 }

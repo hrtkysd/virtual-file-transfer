@@ -1,4 +1,4 @@
-use virtual_file_transfer::{FileSource, SourceReader, VirtualFile, begin_drag};
+use virtual_file_transfer::{FileSource, SourceReader, TransferRequest, VirtualFile, begin_drag};
 
 use std::io;
 
@@ -38,7 +38,7 @@ fn begin_drag_example() -> virtual_file_transfer::Result<()> {
         )?,
     ];
 
-    begin_drag(files)?;
+    begin_drag(TransferRequest::from(files))?;
 
     Ok(())
 }

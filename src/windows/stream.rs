@@ -1,12 +1,14 @@
+use crate::cancellation::CancellationToken;
 use crate::source_reader::{SourceReader, SourceReaderError};
+use crate::transfer::TransferCompletion;
 use std::ffi::c_void;
 use std::io::{Read, SeekFrom};
 use std::mem::ManuallyDrop;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{
-    E_NOTIMPL, S_FALSE, S_OK, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION, STG_E_INVALIDPOINTER,
-    STG_E_READFAULT, STG_E_SEEKERROR,
+    E_ABORT, E_NOTIMPL, S_FALSE, S_OK, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION,
+    STG_E_INVALIDPOINTER, STG_E_READFAULT, STG_E_SEEKERROR,
 };
 use windows::Win32::System::Com::{
     ISequentialStream_Impl, IStream, IStream_Impl, LOCKTYPE, STATFLAG, STATSTG, STGC, STGM_READ,
@@ -24,22 +26,36 @@ struct StreamState {
 pub(crate) struct Stream {
     size: Option<u64>,
     state: Mutex<StreamState>,
+    token: CancellationToken,
+    completion: Option<Arc<TransferCompletion>>,
 }
 
 impl Stream {
-    pub(crate) fn new(reader: SourceReader, size: Option<u64>) -> Self {
+    pub(crate) fn new(
+        reader: SourceReader,
+        size: Option<u64>,
+        token: CancellationToken,
+        completion: Option<Arc<TransferCompletion>>,
+    ) -> Self {
         Self {
             size,
             state: Mutex::new(StreamState {
                 reader,
                 current_position: 0,
             }),
+            token,
+            completion,
         }
     }
 }
 
-pub(crate) fn create_stream_medium(reader: SourceReader, size: Option<u64>) -> STGMEDIUM {
-    let stream: IStream = Stream::new(reader, size).into();
+pub(crate) fn create_stream_medium(
+    reader: SourceReader,
+    size: Option<u64>,
+    token: CancellationToken,
+    completion: Option<Arc<TransferCompletion>>,
+) -> STGMEDIUM {
+    let stream: IStream = Stream::new(reader, size, token, completion).into();
 
     STGMEDIUM {
         tymed: TYMED_ISTREAM.0 as u32,
@@ -72,8 +88,12 @@ impl ISequentialStream_Impl for Stream_Impl {
             Ok(state) => state,
             Err(_) => return STG_E_READFAULT,
         };
-        let read_result: std::io::Result<()> = {
+        let read_result: std::result::Result<(), HRESULT> = {
             loop {
+                if self.token.is_cancelled() {
+                    break Err(E_ABORT);
+                }
+
                 if total_length == buffer.len() {
                     break Ok(());
                 }
@@ -89,7 +109,7 @@ impl ISequentialStream_Impl for Stream_Impl {
                         continue;
                     }
 
-                    Err(error) => break Err(error),
+                    Err(_) => break Err(STG_E_READFAULT),
                 }
             }
         };
@@ -104,8 +124,23 @@ impl ISequentialStream_Impl for Stream_Impl {
 
         state.current_position = read_position;
 
-        if let Err(_error) = read_result {
-            return STG_E_READFAULT;
+        let failure = match read_result {
+            Err(hr) => Some(hr),
+            Ok(()) if self.token.is_cancelled() => Some(E_ABORT),
+            Ok(()) => None,
+        };
+
+        if let Some(hr) = failure {
+            drop(state);
+
+            if hr == E_ABORT
+                && let Some(completion) = &self.completion
+                && completion.mark_as_read_aborted().is_err()
+            {
+                return STG_E_READFAULT;
+            }
+
+            return hr;
         }
 
         if let Some(size) = self.size {
@@ -242,13 +277,16 @@ impl IStream_Impl for Stream_Impl {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Cursor;
+    use std::io::{self, Cursor, Seek};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
     use windows::Win32::System::Com::{ISequentialStream, STATFLAG_DEFAULT};
-
     #[test]
     fn reads_from_com_stream() {
         let reader = SourceReader::seekable(std::io::Cursor::new(b"hello".to_vec()));
-        let stream: IStream = Stream::new(reader, Some(5)).into();
+        let stream: IStream = Stream::new(reader, Some(5), CancellationToken::new(), None).into();
         let sequential: &ISequentialStream = (&stream).into();
 
         {
@@ -301,7 +339,7 @@ mod tests {
     fn stat_uses_known_size_for_streaming_reader() {
         let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
 
-        let stream: IStream = Stream::new(reader, Some(5)).into();
+        let stream: IStream = Stream::new(reader, Some(5), CancellationToken::new(), None).into();
         let mut stat = STATSTG::default();
 
         unsafe {
@@ -315,7 +353,7 @@ mod tests {
     fn stat_fails_for_unknown_size_streaming_reader() {
         let reader = SourceReader::streaming(std::io::Cursor::new(b"hello".to_vec()));
 
-        let stream: IStream = Stream::new(reader, None).into();
+        let stream: IStream = Stream::new(reader, None, CancellationToken::new(), None).into();
         let mut stat = STATSTG::default();
 
         let error = unsafe { stream.Stat(&mut stat, STATFLAG_DEFAULT) }.unwrap_err();
@@ -327,7 +365,7 @@ mod tests {
     fn stat_derives_size_for_unknown_seekable_reader() {
         let reader = SourceReader::seekable(Cursor::new(b"hello".to_vec()));
 
-        let stream: IStream = Stream::new(reader, None).into();
+        let stream: IStream = Stream::new(reader, None, CancellationToken::new(), None).into();
         let mut stat = STATSTG::default();
 
         unsafe {
@@ -341,7 +379,7 @@ mod tests {
     fn com_stream_can_seek() {
         let reader = SourceReader::seekable(Cursor::new(b"hello".to_vec()));
 
-        let stream: IStream = Stream::new(reader, None).into();
+        let stream: IStream = Stream::new(reader, None, CancellationToken::new(), None).into();
 
         let mut position = 0u64;
 
@@ -374,7 +412,7 @@ mod tests {
     fn com_stream_seek_fails_for_streaming_reader() {
         let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
 
-        let stream: IStream = Stream::new(reader, Some(5)).into();
+        let stream: IStream = Stream::new(reader, Some(5), CancellationToken::new(), None).into();
 
         let error = unsafe { stream.Seek(0, STREAM_SEEK_SET, None) }.unwrap_err();
 
@@ -385,7 +423,7 @@ mod tests {
     fn read_fails_when_source_ends_before_declared_size() {
         let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
 
-        let stream: IStream = Stream::new(reader, Some(10)).into();
+        let stream: IStream = Stream::new(reader, Some(10), CancellationToken::new(), None).into();
         let sequential: &ISequentialStream = (&stream).into();
 
         let mut buffer = [0u8; 10];
@@ -407,7 +445,7 @@ mod tests {
     fn read_tracks_position_across_calls() {
         let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
 
-        let stream: IStream = Stream::new(reader, Some(10)).into();
+        let stream: IStream = Stream::new(reader, Some(10), CancellationToken::new(), None).into();
         let sequential: &ISequentialStream = (&stream).into();
 
         let mut first = [0u8; 3];
@@ -423,5 +461,150 @@ mod tests {
 
         assert_eq!(hr, STG_E_READFAULT);
         assert_eq!(read, 2);
+    }
+
+    #[test]
+    fn read_returns_abort_when_cancelled_before_read() {
+        let token = CancellationToken::new();
+        let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
+
+        let stream: IStream = Stream::new(reader, Some(5), token.clone(), None).into();
+        let sequential: &ISequentialStream = (&stream).into();
+
+        token.cancel();
+
+        let mut buffer = [0u8; 5];
+        let mut read = u32::MAX;
+
+        let hr = unsafe {
+            sequential.Read(
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                Some(&mut read),
+            )
+        };
+
+        assert_eq!(hr, E_ABORT);
+        assert_eq!(read, 0);
+        assert_eq!(buffer, [0; 5]);
+    }
+
+    struct CancelOnFirstRead {
+        inner: Cursor<Vec<u8>>,
+        token: CancellationToken,
+        read_count: Arc<AtomicUsize>,
+    }
+
+    impl Read for CancelOnFirstRead {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let len = buffer.len().min(2);
+            let count = self.inner.read(&mut buffer[..len])?;
+
+            self.read_count.fetch_add(1, Ordering::Relaxed);
+            self.token.cancel();
+
+            Ok(count)
+        }
+    }
+
+    impl Seek for CancelOnFirstRead {
+        fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+            self.inner.seek(pos)
+        }
+    }
+
+    #[test]
+    fn read_aborts_when_cancelled_during_read() {
+        let token = CancellationToken::new();
+        let read_count = Arc::new(AtomicUsize::new(0));
+
+        let reader = SourceReader::seekable(CancelOnFirstRead {
+            inner: Cursor::new(b"hello".to_vec()),
+            token: token.clone(),
+            read_count: read_count.clone(),
+        });
+
+        let stream: IStream = Stream::new(reader, Some(5), token, None).into();
+        let sequential: &ISequentialStream = (&stream).into();
+
+        let mut buffer = [0u8; 5];
+        let mut read = 0u32;
+
+        let hr = unsafe {
+            sequential.Read(
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                Some(&mut read),
+            )
+        };
+
+        assert_eq!(hr, E_ABORT);
+        assert_eq!(read, 2);
+        assert_eq!(&buffer[..2], b"he");
+        assert_eq!(read_count.load(Ordering::Relaxed), 1);
+
+        // Partial reads must still update the stream position.
+        let mut position = 0u64;
+        unsafe {
+            stream
+                .Seek(0, STREAM_SEEK_CUR, Some(&mut position))
+                .unwrap();
+        }
+        assert_eq!(position, 2);
+
+        // Further reads must fail without accessing the source.
+        let mut read = u32::MAX;
+
+        let hr = unsafe {
+            sequential.Read(
+                buffer.as_mut_ptr().cast(),
+                buffer.len() as u32,
+                Some(&mut read),
+            )
+        };
+
+        assert_eq!(hr, E_ABORT);
+        assert_eq!(read, 0);
+        assert_eq!(read_count.load(Ordering::Relaxed), 1);
+    }
+    #[test]
+    fn cancellation_is_shared_between_streams() {
+        let token = CancellationToken::new();
+
+        let stream_a: IStream = Stream::new(
+            SourceReader::streaming(Cursor::new(b"aaa".to_vec())),
+            Some(3),
+            token.clone(),
+            None,
+        )
+        .into();
+
+        let stream_b: IStream = Stream::new(
+            SourceReader::streaming(Cursor::new(b"bbb".to_vec())),
+            Some(3),
+            token.clone(),
+            None,
+        )
+        .into();
+
+        token.cancel();
+
+        for stream in [&stream_a, &stream_b] {
+            let sequential: &ISequentialStream = stream.into();
+
+            let mut buffer = [0u8; 3];
+            let mut read = u32::MAX;
+
+            let hr = unsafe {
+                sequential.Read(
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len() as u32,
+                    Some(&mut read),
+                )
+            };
+
+            assert_eq!(hr, E_ABORT);
+            assert_eq!(read, 0);
+        }
     }
 }

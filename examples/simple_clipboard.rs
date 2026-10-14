@@ -1,7 +1,8 @@
 use std::io;
 
-use virtual_file_transfer::{FileSource, SourceReader, VirtualFile, copy_to_clipboard};
-
+use virtual_file_transfer::{
+    FileSource, SourceReader, TransferRequest, VirtualFile, copy_to_clipboard,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     DispatchMessageW, GetMessageW, MSG, TranslateMessage,
 };
@@ -33,7 +34,7 @@ fn main() -> virtual_file_transfer::Result<()> {
             }),
         )?,
     ];
-    let _clipboard = copy_to_clipboard(files)?;
+    let _clipboard = copy_to_clipboard(TransferRequest::from(files))?;
 
     println!("Paste into Explorer with Ctrl+V.");
     println!("Press Enter to exit.");
@@ -53,7 +54,7 @@ fn main() -> virtual_file_transfer::Result<()> {
 
         unsafe {
             _ = TranslateMessage(&message);
-            DispatchMessageW(&message);
+            _ = DispatchMessageW(&message);
         }
     }
 
