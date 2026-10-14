@@ -302,7 +302,7 @@ mod tests {
 
         assert_eq!(medium.tymed, TYMED_ISTREAM.0 as u32);
 
-        let stream = unsafe { (&*medium.u.pstm).as_ref().unwrap().clone() };
+        let stream = unsafe { (*medium.u.pstm).as_ref().unwrap().clone() };
 
         unsafe {
             ReleaseStgMedium(&mut medium);
