@@ -118,10 +118,12 @@ impl DataObject {
 
     pub(crate) fn finish_without_async(&self) -> Result<()> {
         let released = {
+            // Recover the poisoned mutex to release the COM self-reference
+            // even if a previous operation panicked.
             let mut state = self
                 .async_state
                 .lock()
-                .map_err(|_| WindowsError::from(E_FAIL))?;
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
 
             if state.in_operation {
                 return Ok(());

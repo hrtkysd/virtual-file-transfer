@@ -19,8 +19,8 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GetMessageW, IDC_ARROW, KillTimer, LoadCursorW, MSG, PostQuitMessage, RegisterClassW, SetTimer,
-    TranslateMessage, WINDOW_EX_STYLE, WM_DESTROY, WM_LBUTTONDOWN, WM_PAINT, WM_RBUTTONDOWN,
-    WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
+    TranslateMessage, WINDOW_EX_STYLE, WM_DESTROY, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_PAINT,
+    WM_RBUTTONDOWN, WM_TIMER, WNDCLASSW, WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 use windows::core::{Error, Result, w};
 
@@ -186,6 +186,14 @@ unsafe extern "system" fn window_proc(
                 });
                 refresh(hwnd);
             }
+            LRESULT(0)
+        }
+        WM_MBUTTONDOWN => {
+            // Uncomment to test drop the clipboard session during an active transfer to verify COM lifetime handling.
+            //let session = STATE.with(|state| state.borrow_mut().clipboard.take());
+            //drop(session);
+
+            refresh(hwnd);
             LRESULT(0)
         }
         WM_RBUTTONDOWN => {
