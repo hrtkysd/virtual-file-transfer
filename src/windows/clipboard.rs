@@ -8,6 +8,7 @@ use crate::{PlatformErrorKind, Result, TransferRequest};
 use std::ffi::c_void;
 use windows::Win32::Foundation::S_OK;
 use windows::Win32::System::Com::IDataObject;
+use windows::Win32::System::DataExchange::{CloseClipboard, EmptyClipboard, OpenClipboard};
 use windows::Win32::System::Ole::OleSetClipboard;
 use windows::core::{HRESULT, Interface};
 
@@ -31,11 +32,19 @@ impl ClipboardSession {
 
 impl Drop for ClipboardSession {
     fn drop(&mut self) {
-        let hr = unsafe { ole_is_current_clipboard(self.data_object.as_raw()) };
-
-        if hr == S_OK {
-            let _ = unsafe { OleSetClipboard(None::<&IDataObject>) };
+        // Keep the clipboard locked while checking ownership and clearing it,
+        // so another application cannot replace its contents between these operations.
+        if unsafe { OpenClipboard(None) }.is_err() {
+            return;
         }
+
+        let is_current = unsafe { ole_is_current_clipboard(self.data_object.as_raw()) == S_OK };
+
+        if is_current {
+            let _ = unsafe { EmptyClipboard() };
+        }
+
+        let _ = unsafe { CloseClipboard() };
     }
 }
 
@@ -173,5 +182,107 @@ mod tests {
 
         assert_eq!(first_drops.load(Ordering::SeqCst), 1);
         assert_eq!(second_drops.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    #[ignore = "Clipboard lock helper"]
+    fn hold_clipboard_in_subprocess() {
+        if std::env::var_os("VFT_CLIPBOARD_HOLDER").is_none() {
+            return;
+        }
+
+        use std::io::{Read, Write};
+        use windows::Win32::System::DataExchange::{CloseClipboard, OpenClipboard};
+        use windows::Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_OVERLAPPED,
+        };
+        use windows::core::w;
+
+        // Create a window owned by this process and thread.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                w!("STATIC"),
+                w!("Clipboard Test Holder"),
+                WS_OVERLAPPED,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+        };
+
+        // OpenClipboard(NULL) may succeed even when subsequent clipboard operations fail with ERROR_CLIPBOARD_NOT_OPEN.
+        // Use an explicit HWND to avoid this observed behavior.
+        // See: https://cygwin.com/pipermail/cygwin/2026-February/259452.html
+        unsafe { OpenClipboard(Some(hwnd)).unwrap() };
+
+        println!("VFT_LOCKED");
+        std::io::stdout().flush().unwrap();
+
+        // Wait until the parent has dropped ClipboardSession.
+        let mut signal = [0u8; 1];
+        let read_result = std::io::stdin().read_exact(&mut signal);
+
+        let close_result = unsafe { CloseClipboard() };
+        unsafe { DestroyWindow(hwnd).unwrap() };
+
+        read_result.unwrap();
+        close_result.unwrap();
+    }
+
+    #[test]
+    #[ignore = "Uses the system clipboard"]
+    fn dropping_session_while_clipboard_is_locked_does_not_block() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::{Command, Stdio};
+        use std::time::{Duration, Instant};
+
+        let drops = Arc::new(AtomicUsize::new(0));
+        let session = copy_to_clipboard(make_request(Arc::clone(&drops))).unwrap();
+
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "windows::clipboard::tests::hold_clipboard_in_subprocess",
+                "--ignored",
+                "--nocapture",
+            ])
+            .env("VFT_CLIPBOARD_HOLDER", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .unwrap();
+
+        let mut stdout = BufReader::new(child.stdout.take().unwrap());
+        loop {
+            let mut line = String::new();
+            assert_ne!(stdout.read_line(&mut line).unwrap(), 0);
+            if line.contains("VFT_LOCKED") {
+                break;
+            }
+        }
+
+        // The child process now holds the clipboard.
+        let start = Instant::now();
+        drop(session);
+        let elapsed = start.elapsed();
+
+        child.stdin.take().unwrap().write_all(b"x").unwrap();
+        assert!(child.wait().unwrap().success());
+
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "ClipboardSession::drop() blocked for {elapsed:?}"
+        );
+
+        // Restore an accessible, empty clipboard.
+        let _ole = OleContext::new().unwrap();
+        clear_clipboard();
     }
 }
