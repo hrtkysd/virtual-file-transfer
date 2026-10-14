@@ -124,9 +124,11 @@ impl IDataObjectAsyncCapability_Impl for DataObject_Impl {
                 effect: effects,
             };
 
-            let record_result = self
-                .completion
-                .record_if_pending(transfer_result.into_status());
+            let record_result = if let Some(completion) = &self.completion {
+                completion.record_if_pending(transfer_result.into_status())
+            } else {
+                Ok(())
+            };
 
             state.in_operation = false;
 
@@ -142,6 +144,7 @@ impl IDataObjectAsyncCapability_Impl for DataObject_Impl {
 #[cfg(test)]
 mod tests {
     use super::super::DataObject;
+    use crate::cancellation::CancellationToken;
     use crate::{FileSource, SourceReader, VirtualFile};
     use std::io;
     use windows::Win32::Foundation::S_OK;
@@ -159,7 +162,9 @@ mod tests {
     fn create_async_object() -> IDataObjectAsyncCapability {
         let file = VirtualFile::new("hello.txt", Box::new(StubSource)).unwrap();
 
-        let data_object: IDataObject = DataObject::new(vec![file]).unwrap().into();
+        let data_object: IDataObject = DataObject::new(vec![file], CancellationToken::new(), None)
+            .unwrap()
+            .into();
 
         data_object.cast().unwrap()
     }

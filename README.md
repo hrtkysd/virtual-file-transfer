@@ -68,6 +68,31 @@ Call `start_drag()` from an appropriate mouse event in an application with a Win
 
 Pass a `Vec<VirtualFile>` to transfer multiple files. The same underlying representation is used for clipboard transfers.
 
+### Cancellation
+
+Transfers can be cancelled using a `CancellationToken`.
+
+```rust
+use virtual_file_transfer::{begin_drag, TransferRequest};
+
+let request = TransferRequest::new(files);
+let token = request.cancellation_token();
+
+// Share the token with another thread or event handler.
+// It can request cancellation even while begin_drag() is running.
+let handle = begin_drag(request)?;
+
+// Elsewhere, when cancellation is requested:
+// token.cancel();
+
+// Alternatively, cancel an ongoing asynchronous transfer:
+// handle.cancel();
+```
+
+Clipboard transfers can be cancelled through `ClipboardSession::cancel()`. Cancelling a clipboard session also affects subsequent paste operations using the same clipboard data.
+
+Cancellation is cooperative. An in-progress blocking read is not forcibly interrupted; cancellation is observed when the read operation can check the token.
+
 ### Readers and file sizes
 
 `FileSource` is intentionally small:
@@ -154,27 +179,33 @@ The caller of this lower-level API is responsible for appropriate OLE/COM initia
 
 ## Code layout
 
-```text
+```
 src/
-├── lib.rs                 Public API / re-exports
-├── virtual_file.rs        Name, size metadata, and source of one virtual file
-├── file_source.rs         FileSource trait
-├── source_reader.rs       Streaming / Seekable reader and size derivation
-├── factory_source.rs      Closure-based FileSource implementation
-├── error.rs               Public error types
-├── windows.rs             Windows module entry point and OLE initialization
+├── lib.rs                     Public API / re-exports
+├── virtual_file.rs            Name, size metadata, and source of one virtual file
+├── file_source.rs             FileSource trait
+├── source_reader.rs           Streaming / Seekable reader and size derivation
+├── factory_source.rs          Closure-based FileSource implementation
+├── transfer.rs                TransferRequest and transfer status
+├── cancellation.rs            CancellationToken
+├── error.rs                   Public error types
+├── windows.rs                 Windows module entry point and OLE initialization
 └── windows/
-    ├── data_object.rs     IDataObject; dispatch by format and file index
-    ├── formats.rs         File descriptor formats and STGMEDIUM construction
-    ├── stream.rs          IStream adapter around SourceReader
-    ├── drop_source.rs     IDropSource for the convenience drag operation
-    ├── drag_drop.rs       DoDragDrop integration
-    ├── clipboard.rs       OLE clipboard integration
-    └── error.rs           Windows error conversion
+    ├── data_object.rs         IDataObject; dispatch by format and file index
+    ├── data_object/
+    │   └── async_operation.rs IDataObjectAsyncCapability and async operation lifecycle
+    ├── formats.rs             File descriptor formats and STGMEDIUM construction
+    ├── stream.rs              IStream adapter around SourceReader
+    ├── drop_source.rs         IDropSource for the convenience drag operation
+    ├── drag_drop.rs           DoDragDrop integration
+    ├── clipboard.rs           OLE clipboard integration
+    └── error.rs               Windows error conversion
 
 examples/
-├── simple_drag.rs         Drag a file backed by in-memory data
-└── zip_drag.rs            Drag multiple ZIP entries without extracting first
+├── simple_drag.rs             Drag a file backed by in-memory data
+├── zip_drag.rs                Drag multiple ZIP entries without extracting first
+├── slow_drag.rs               Slow drag transfer and cancellation testing
+└── slow_clipboard.rs          Slow clipboard transfer and cancellation testing
 ```
 
 The division is deliberate: `VirtualFile`, `FileSource`, and `SourceReader` don't know anything about Win32. The Windows backend translates them into the COM interfaces understood by the Shell. `FactorySource` is only a convenience adapter; users can implement `FileSource` directly.
@@ -187,6 +218,8 @@ In the Windows backend, `IDataObject::GetData` returns either the group of file 
 cargo test
 cargo run --example simple_drag
 cargo run --example zip_drag
+cargo run --example slow_drag
+cargo run --example slow_clipboard
 ```
 
 Both drag examples open a window. Press and hold the left mouse button in that window, then drop into Explorer.
@@ -206,14 +239,15 @@ This is not yet a compatibility-tested replacement for every Windows drag-and-dr
 - Behavior with targets other than Explorer needs broader testing.
 - Unknown-size, non-seekable streams cannot currently be transferred to the tested Explorer path without first making the size available, for example through explicit spooling.
 - Some `IStream` methods, including `CopyTo` and `Clone`, are not implemented.
-- Large transfers, cancellation, error propagation, and source-process lifetime need more testing.
-- Reads are synchronous. A source backed by network I/O may block while supplying data.
+- Cancellation has been tested with Windows Explorer for synchronous and asynchronous drag-and-drop transfers, as well as clipboard transfers. Other receiving applications need further testing.
+- Large transfers, error propagation, and source-process lifetime need more testing.
+- Individual `IStream::Read` calls are synchronous. A source backed by network I/O may block while supplying data, even during an asynchronous transfer.
 - Explicit spooling trades temporary storage and startup latency for a determinable size and seekability.
 
 ## Next steps
 
 Near term: improve COM compatibility tests, harden error handling and file-name validation, test explicit spooling with large and failing sources, document clipboard lifetime behavior, and refine the lower-level `IDataObject` API so applications can retain control of their own drag-and-drop flow.
 
-Later: a C ABI and optional C++/C# wrappers, cancellation support, and a macOS backend. ZIP and HTTP integrations are candidates for separate adapters rather than required dependencies of the core crate.
+Later: a C ABI and optional C++/C# wrappers, and a macOS backend. ZIP and HTTP integrations are candidates for separate adapters rather than required dependencies of the core crate.
 
 There is no release schedule for these items.

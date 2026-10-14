@@ -1,3 +1,4 @@
+mod cancellation;
 mod error;
 mod factory_source;
 mod file_source;
@@ -12,12 +13,12 @@ pub use error::{Error, InputError, PlatformError, PlatformErrorKind, Result};
 pub use factory_source::FactorySource;
 pub use file_source::FileSource;
 pub use source_reader::SourceReader;
-pub use transfer::{TransferHandle, TransferStatus};
+pub use transfer::{TransferHandle, TransferRequest, TransferStatus};
 pub use virtual_file::VirtualFile;
 
 #[cfg(windows)]
-pub fn begin_drag(files: Vec<VirtualFile>) -> Result<TransferHandle> {
-    windows::begin_drag(files)
+pub fn begin_drag(request: TransferRequest) -> Result<TransferHandle> {
+    windows::begin_drag(request)
 }
 
 #[cfg(windows)]
@@ -27,8 +28,15 @@ pub struct ClipboardSession {
 }
 
 #[cfg(windows)]
-pub fn copy_to_clipboard(file: Vec<VirtualFile>) -> Result<ClipboardSession> {
+impl ClipboardSession {
+    pub fn cancel(&self) {
+        self._inner.cancel();
+    }
+}
+
+#[cfg(windows)]
+pub fn copy_to_clipboard(request: TransferRequest) -> Result<ClipboardSession> {
     Ok(ClipboardSession {
-        _inner: windows::copy_to_clipboard(file)?,
+        _inner: windows::copy_to_clipboard(request)?,
     })
 }

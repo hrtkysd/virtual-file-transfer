@@ -1,5 +1,5 @@
 use ouroboros::self_referencing;
-use virtual_file_transfer::{FileSource, SourceReader, begin_drag};
+use virtual_file_transfer::{FileSource, SourceReader, TransferRequest, begin_drag};
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -119,7 +119,7 @@ unsafe extern "system" fn window_proc(
             match create_zip_virtual_files(PathBuf::from("sample.zip"), &["hello.txt", "world.txt"])
             {
                 Ok(files) => {
-                    if let Err(error) = begin_drag(files) {
+                    if let Err(error) = begin_drag(TransferRequest::from(files)) {
                         eprintln!("drag failed: {error}");
                     }
                 }
