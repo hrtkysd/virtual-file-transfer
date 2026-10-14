@@ -90,6 +90,10 @@ impl IDataObjectAsyncCapability_Impl for DataObject_Impl {
             return Err(E_FAIL.into());
         }
 
+        if state.self_ref.is_none() {
+            state.self_ref = Some(self.to_object());
+        }
+
         state.in_operation = true;
         Ok(())
     }
@@ -110,10 +114,11 @@ impl IDataObjectAsyncCapability_Impl for DataObject_Impl {
         effects: u32,
     ) -> Result<()> {
         let (released, record_result) = {
+            // Recover the poisoned mutex to release the COM self-reference even if a previous operation panicked.
             let mut state = self
                 .async_state
                 .lock()
-                .map_err(|_| WindowsError::from(E_FAIL))?;
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
 
             if !state.in_operation {
                 return Ok(());
@@ -147,10 +152,12 @@ mod tests {
     use crate::cancellation::CancellationToken;
     use crate::{FileSource, SourceReader, VirtualFile};
     use std::io;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
     use windows::Win32::Foundation::S_OK;
     use windows::Win32::System::Com::IDataObject;
     use windows::Win32::UI::Shell::IDataObjectAsyncCapability;
-    use windows::core::Interface;
+    use windows::core::{ComObject, Interface};
+
     struct StubSource;
 
     impl FileSource for StubSource {
@@ -211,5 +218,181 @@ mod tests {
             object.EndOperation(S_OK, None, 0).unwrap();
             assert!(!object.InOperation().unwrap().as_bool());
         }
+    }
+
+    fn create_async_object_with_owner() -> (ComObject<DataObject>, IDataObjectAsyncCapability) {
+        let file = VirtualFile::new("hello.txt", Box::new(StubSource)).unwrap();
+
+        let object =
+            ComObject::new(DataObject::new(vec![file], CancellationToken::new(), None).unwrap());
+
+        let capability = object.to_interface();
+
+        (object, capability)
+    }
+
+    #[test]
+    fn self_reference_is_reacquired_after_end_operation() {
+        let (object, capability) = create_async_object_with_owner();
+
+        unsafe {
+            capability.SetAsyncMode(true).unwrap();
+            capability.StartOperation(None).unwrap();
+        }
+
+        assert!(object.get().async_state.lock().unwrap().self_ref.is_some());
+
+        unsafe {
+            capability.EndOperation(S_OK, None, 0).unwrap();
+        }
+
+        {
+            let state = object.get().async_state.lock().unwrap();
+            assert!(!state.in_operation);
+            assert!(state.self_ref.is_none());
+        }
+
+        // Start another asynchronous operation using the same DataObject.
+        unsafe {
+            capability.StartOperation(None).unwrap();
+        }
+
+        {
+            let state = object.get().async_state.lock().unwrap();
+            assert!(state.in_operation);
+            assert!(state.self_ref.is_some());
+        }
+
+        unsafe {
+            capability.EndOperation(S_OK, None, 0).unwrap();
+        }
+
+        assert!(object.get().async_state.lock().unwrap().self_ref.is_none());
+    }
+
+    #[test]
+    fn active_operation_rejects_restart_and_disable() {
+        let (object, capability) = create_async_object_with_owner();
+
+        unsafe {
+            capability.SetAsyncMode(true).unwrap();
+            capability.StartOperation(None).unwrap();
+
+            assert!(capability.StartOperation(None).is_err());
+            assert!(capability.SetAsyncMode(false).is_err());
+
+            assert!(capability.GetAsyncMode().unwrap().as_bool());
+            assert!(capability.InOperation().unwrap().as_bool());
+        }
+
+        assert!(object.get().async_state.lock().unwrap().self_ref.is_some());
+
+        unsafe {
+            capability.EndOperation(S_OK, None, 0).unwrap();
+        }
+
+        assert!(object.get().async_state.lock().unwrap().self_ref.is_none());
+    }
+
+    #[test]
+    fn repeated_end_operation_does_not_release_twice() {
+        let (object, capability) = create_async_object_with_owner();
+
+        unsafe {
+            capability.SetAsyncMode(true).unwrap();
+            capability.StartOperation(None).unwrap();
+
+            capability.EndOperation(S_OK, None, 0).unwrap();
+            capability.EndOperation(S_OK, None, 0).unwrap();
+        }
+
+        let state = object.get().async_state.lock().unwrap();
+
+        assert!(!state.in_operation);
+        assert!(state.self_ref.is_none());
+    }
+
+    #[test]
+    fn finish_without_async_releases_self_reference() {
+        let (object, capability) = create_async_object_with_owner();
+
+        unsafe {
+            capability.SetAsyncMode(true).unwrap();
+        }
+
+        assert!(object.get().async_state.lock().unwrap().self_ref.is_some());
+
+        object.get().finish_without_async().unwrap();
+
+        let state = object.get().async_state.lock().unwrap();
+
+        assert!(!state.enabled);
+        assert!(!state.in_operation);
+        assert!(state.self_ref.is_none());
+    }
+
+    fn poison_async_state(object: &ComObject<DataObject>) {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = object.get().async_state.lock().unwrap();
+            panic!("Intentionally poison async_state");
+        }));
+
+        assert!(result.is_err());
+        assert!(object.get().async_state.is_poisoned());
+    }
+
+    #[test]
+    fn finish_without_async_releases_self_reference_when_mutex_is_poisoned() {
+        let (object, capability) = create_async_object_with_owner();
+
+        unsafe {
+            capability.SetAsyncMode(true).unwrap();
+        }
+
+        poison_async_state(&object);
+
+        // Cleanup must succeed even if the mutex is poisoned.
+        object.get().finish_without_async().unwrap();
+
+        let state = object
+            .get()
+            .async_state
+            .lock()
+            .err()
+            .expect("async_state should be poisoned")
+            .into_inner();
+
+        assert!(!state.enabled);
+        assert!(!state.in_operation);
+        assert!(state.self_ref.is_none());
+    }
+
+    #[test]
+    fn end_operation_releases_self_reference_when_mutex_is_poisoned() {
+        let (object, capability) = create_async_object_with_owner();
+
+        unsafe {
+            capability.SetAsyncMode(true).unwrap();
+            capability.StartOperation(None).unwrap();
+        }
+
+        poison_async_state(&object);
+
+        // EndOperation must release the self-reference even if
+        // the mutex is poisoned.
+        unsafe {
+            capability.EndOperation(S_OK, None, 0).unwrap();
+        }
+
+        let state = object
+            .get()
+            .async_state
+            .lock()
+            .err()
+            .expect("async_state should be poisoned")
+            .into_inner();
+
+        assert!(!state.in_operation);
+        assert!(state.self_ref.is_none());
     }
 }
