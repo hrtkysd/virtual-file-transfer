@@ -189,7 +189,7 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_MBUTTONDOWN => {
-            // Uncomment to test drop the clipboard session during an active transfer to verify COM lifetime handling. 
+            // Uncomment to test drop the clipboard session during an active transfer to verify COM lifetime handling.
             //let session = STATE.with(|state| state.borrow_mut().clipboard.take());
             //drop(session);
 
