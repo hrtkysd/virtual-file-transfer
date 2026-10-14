@@ -7,6 +7,12 @@ license = "MIT"
 repository = "https://github.com/hrtkysd/virtual-file-transfer"
 readme = "README.md"
 keywords = ["windows", "clipboard", "drag-and-drop", "ole"]
+exclude = [
+    "/.github/",
+    "/.editorconfig",
+    "/.gitattributes",
+    "/.gitignore",
+]
 
 [features]
 default = []
