@@ -18,28 +18,26 @@ pub use transfer::{TransferEffect, TransferHandle, TransferRequest, TransferStat
 pub use virtual_file::VirtualFile;
 
 #[cfg(windows)]
-pub fn begin_drag(
-    request: impl Into<TransferRequest>,
-) -> Result<TransferHandle> {
+pub fn begin_drag(request: impl Into<TransferRequest>) -> Result<TransferHandle> {
     windows::begin_drag(request.into())
 }
 
 #[cfg(windows)]
 #[must_use = "Keep this session alive while clipboard data is needed"]
 pub struct ClipboardSession {
-    _inner: windows::ClipboardSession,
+    inner: windows::ClipboardSession,
 }
 
 #[cfg(windows)]
 impl ClipboardSession {
     pub fn cancel(&self) {
-        self._inner.cancel();
+        self.inner.cancel();
     }
 }
 
 #[cfg(windows)]
 pub fn copy_to_clipboard(request: TransferRequest) -> Result<ClipboardSession> {
     Ok(ClipboardSession {
-        _inner: windows::copy_to_clipboard(request)?,
+        inner: windows::copy_to_clipboard(request)?,
     })
 }

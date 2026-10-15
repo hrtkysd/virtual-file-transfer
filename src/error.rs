@@ -3,6 +3,7 @@ use std::io;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[non_exhaustive]
 #[derive(Debug)]
 pub enum Error {
     InvalidInput(InputError),
@@ -10,22 +11,24 @@ pub enum Error {
     Platform(PlatformError),
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputError {
     EmptyName,
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlatformErrorKind {
+    UnsupportedFileName,
+    InitializationFailed,
+    TransferFailed,
 }
 
 #[derive(Debug)]
 pub struct PlatformError {
     kind: PlatformErrorKind,
     message: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PlatformErrorKind {
-    UnsupportedFileName,
-    InitializationFailed,
-    TransferFailed,
 }
 
 impl PlatformError {

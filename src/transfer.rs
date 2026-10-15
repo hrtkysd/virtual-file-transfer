@@ -4,6 +4,7 @@ use super::virtual_file::VirtualFile;
 
 use std::sync::{Arc, Mutex};
 
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferEffect {
     None,
@@ -13,6 +14,7 @@ pub enum TransferEffect {
     Other(u32),
 }
 
+#[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferStatus {
     Pending,
