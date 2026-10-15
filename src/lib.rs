@@ -4,6 +4,7 @@ mod factory_source;
 mod file_source;
 mod source_reader;
 mod transfer;
+mod validation;
 mod virtual_file;
 
 #[cfg(windows)]

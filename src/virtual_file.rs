@@ -1,6 +1,7 @@
+use crate::Result;
 use crate::file_source::FileSource;
 use crate::source_reader::SourceReader;
-use crate::{Error, InputError, Result};
+use crate::validation::validate_file_name;
 use std::io;
 
 pub struct VirtualFile {
@@ -11,9 +12,7 @@ pub struct VirtualFile {
 
 impl VirtualFile {
     pub fn new(name: &str, source: Box<dyn FileSource>) -> Result<Self> {
-        if name.is_empty() {
-            return Err(Error::InvalidInput(InputError::EmptyName));
-        }
+        validate_file_name(name)?;
 
         Ok(Self {
             name: name.to_string(),
@@ -43,8 +42,8 @@ impl VirtualFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{Error, InputError};
     use std::io::{self, Read};
-
     struct StubSource;
 
     impl FileSource for StubSource {

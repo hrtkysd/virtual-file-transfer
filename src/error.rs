@@ -15,6 +15,7 @@ pub enum Error {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputError {
     EmptyName,
+    InvalidFileName,
 }
 
 #[non_exhaustive]
@@ -59,6 +60,9 @@ impl fmt::Display for InputError {
         match self {
             Self::EmptyName => {
                 write!(f, "file name must not be empty")
+            }
+            Self::InvalidFileName => {
+                write!(f, "invalid file name")
             }
         }
     }

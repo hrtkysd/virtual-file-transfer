@@ -6,6 +6,8 @@ mod error;
 mod formats;
 mod stream;
 
+pub(crate) mod validation;
+
 use std::marker::PhantomData;
 use std::rc::Rc;
 
