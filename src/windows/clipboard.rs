@@ -57,9 +57,7 @@ pub(crate) fn copy_to_clipboard(request: TransferRequest) -> Result<ClipboardSes
         cancellation: token,
     } = request;
 
-    let data_object: IDataObject = DataObject::new(files, token.clone(), None)
-        .map_err(|error| from_windows_error(PlatformErrorKind::TransferFailed, error))?
-        .into();
+    let data_object: IDataObject = DataObject::new(files, token.clone(), None)?.into();
 
     // Unlike drag-and-drop, OleSetClipboard only registers the data object.
     // File contents are retrieved on demand when pasted, so asynchronous mode is not required for clipboard registration.

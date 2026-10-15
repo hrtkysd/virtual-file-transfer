@@ -12,9 +12,26 @@ pub enum Error {
 }
 
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileNameErrorReason {
+    InvalidCharacter(char),
+    InvalidComponent(String),
+    ReservedName(String),
+    TrailingSpaceOrPeriod(String),
+    TooLong { actual: usize, max: usize },
+}
+
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputError {
+    ConflictPath,
+    DuplicatePath,
     EmptyName,
+    EmptyTransfer,
+    InvalidFileName {
+        name: String,
+        reason: FileNameErrorReason,
+    },
 }
 
 #[non_exhaustive]
@@ -57,8 +74,31 @@ impl From<io::Error> for Error {
 impl fmt::Display for InputError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyName => {
-                write!(f, "file name must not be empty")
+            Self::EmptyName => write!(f, "file name must not be empty"),
+            Self::InvalidFileName { name, reason } => {
+                write!(f, "invalid file name {name:?}: {reason}")
+            }
+            Self::EmptyTransfer => write!(f, "transfer must contain at least one file"),
+            Self::DuplicatePath => write!(f, "duplicate file path"),
+            Self::ConflictPath => write!(f, "file path conflicts with a parent path"),
+        }
+    }
+}
+
+impl fmt::Display for FileNameErrorReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidCharacter(ch) => write!(f, "invalid character {ch:?}"),
+            Self::InvalidComponent(component) => write!(f, "invalid path component {component:?}"),
+            Self::ReservedName(component) => write!(f, "reserved device name {component:?}"),
+            Self::TrailingSpaceOrPeriod(component) => {
+                write!(f, "trailing space or period in {component:?}")
+            }
+            Self::TooLong { actual, max } => {
+                write!(
+                    f,
+                    "path length {actual} exceeds maximum {max} UTF-16 code units"
+                )
             }
         }
     }

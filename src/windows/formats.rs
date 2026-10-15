@@ -1,11 +1,10 @@
-use crate::Result;
 use std::mem::{ManuallyDrop, size_of};
 
 use std::ptr;
 
 use std::sync::OnceLock;
 
-use windows::Win32::Foundation::{E_INVALIDARG, GlobalFree, MAX_PATH};
+use windows::Win32::Foundation::{E_INVALIDARG, GlobalFree};
 use windows::Win32::System::Com::{STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL};
 use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
@@ -56,9 +55,6 @@ impl FileTransferFormats {
 }
 
 fn create_file_descriptor(metadata: &FileDescriptorMetadata<'_>) -> WindowsResult<FILEDESCRIPTORW> {
-    validate_file_name(metadata.name)
-        .map_err(|error| WindowsError::new(E_INVALIDARG, error.to_string()))?;
-
     let mut descriptor = FILEDESCRIPTORW::default();
 
     let mut flags = FD_UNICODE.0 as u32;
@@ -73,14 +69,19 @@ fn create_file_descriptor(metadata: &FileDescriptorMetadata<'_>) -> WindowsResul
 
     descriptor.dwFlags = flags;
 
-    let name_utf16: Vec<u16> = metadata.name.encode_utf16().collect();
+    let normalized_name = metadata.name.replace('/', "\\");
+    let name_utf16: Vec<u16> = normalized_name.encode_utf16().collect();
 
     let mut file_name = [0u16; 260];
 
-    assert!(name_utf16.len() < file_name.len());
+    if name_utf16.len() >= file_name.len() {
+        return Err(WindowsError::new(
+            E_INVALIDARG,
+            "file name exceeds FILEDESCRIPTORW capacity",
+        ));
+    }
 
     file_name[..name_utf16.len()].copy_from_slice(&name_utf16);
-
     descriptor.cFileName = file_name;
 
     Ok(descriptor)
@@ -130,17 +131,6 @@ pub(crate) fn create_file_group_descriptor_medium(
     })
 }
 
-pub(crate) fn validate_file_name(name: &str) -> Result<()> {
-    if name.encode_utf16().count() >= MAX_PATH as usize {
-        return Err(crate::Error::Platform(crate::PlatformError::new(
-            crate::PlatformErrorKind::UnsupportedFileName,
-            format!("file name exceeds {} UTF-16 code units", MAX_PATH - 1),
-        )));
-    }
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -170,10 +160,37 @@ mod tests {
     }
 
     #[test]
-    fn validates_file_name_length() {
-        assert!(validate_file_name(&"a".repeat(259)).is_ok());
-        assert!(validate_file_name(&"a".repeat(260)).is_err());
+    fn normalizes_relative_path_in_descriptor() {
+        let metadata = FileDescriptorMetadata {
+            name: "reports/2026/report.csv",
+            size: Some(5),
+        };
 
-        assert!(validate_file_name(&"😀".repeat(130)).is_err());
+        let descriptor = create_file_descriptor(&metadata).unwrap();
+
+        let file_name = descriptor.cFileName;
+        let length = file_name.iter().position(|&c| c == 0).unwrap();
+        let name = String::from_utf16(&file_name[..length]).unwrap();
+
+        assert_eq!(name, r"reports\2026\report.csv");
+    }
+
+    #[test]
+    fn validates_descriptor_name_length() {
+        // 259 UTF-16 code units + NUL: valid
+        let valid_name = "a".repeat(259);
+        let metadata = FileDescriptorMetadata {
+            name: &valid_name,
+            size: None,
+        };
+        assert!(create_file_descriptor(&metadata).is_ok());
+
+        // 260 UTF-16 code units + NUL: invalid
+        let invalid_name = "a".repeat(260);
+        let metadata = FileDescriptorMetadata {
+            name: &invalid_name,
+            size: None,
+        };
+        assert!(create_file_descriptor(&metadata).is_err());
     }
 }

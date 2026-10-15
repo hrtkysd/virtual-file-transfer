@@ -24,10 +24,11 @@ pub(crate) fn begin_drag(request: TransferRequest) -> Result<TransferHandle> {
 
     let completion = Arc::new(TransferCompletion::new());
 
-    let object = ComObject::new(
-        DataObject::new(files, token.clone(), Some(Arc::clone(&completion)))
-            .map_err(|error| from_windows_error(PlatformErrorKind::TransferFailed, error))?,
-    );
+    let object = ComObject::new(DataObject::new(
+        files,
+        token.clone(),
+        Some(Arc::clone(&completion)),
+    )?);
 
     let data_object: IDataObject = object.to_interface();
     let async_capability: IDataObjectAsyncCapability = object.to_interface();
