@@ -238,7 +238,7 @@ This is not yet a compatibility-tested replacement for every Windows drag-and-dr
 
 - Behavior with targets other than Explorer needs broader testing.
 - Unknown-size, non-seekable streams cannot currently be transferred to the tested Explorer path without first making the size available, for example through explicit spooling.
-- Some `IStream` methods, including `CopyTo` and `Clone`, are not implemented.
+- Some `IStream` methods, including `Clone`, are not implemented.
 - Cancellation has been tested with Windows Explorer for synchronous and asynchronous drag-and-drop transfers, as well as clipboard transfers. Other receiving applications need further testing.
 - Large transfers, error propagation, and source-process lifetime need more testing.
 - Individual `IStream::Read` calls are synchronous. A source backed by network I/O may block while supplying data, even during an asynchronous transfer.

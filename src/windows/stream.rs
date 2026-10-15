@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{
     E_ABORT, E_NOTIMPL, S_FALSE, S_OK, STG_E_ACCESSDENIED, STG_E_INVALIDFUNCTION,
-    STG_E_INVALIDPOINTER, STG_E_READFAULT, STG_E_SEEKERROR,
+    STG_E_INVALIDPOINTER, STG_E_READFAULT, STG_E_SEEKERROR, STG_E_WRITEFAULT,
 };
 use windows::Win32::System::Com::{
     ISequentialStream_Impl, IStream, IStream_Impl, LOCKTYPE, STATFLAG, STATSTG, STGC, STGM_READ,
@@ -213,12 +213,78 @@ impl IStream_Impl for Stream_Impl {
 
     fn CopyTo(
         &self,
-        _pstm: Ref<'_, IStream>,
-        _cb: u64,
-        _pcbread: *mut u64,
-        _pcbwritten: *mut u64,
+        pstm: Ref<'_, IStream>,
+        cb: u64,
+        pcbread: *mut u64,
+        pcbwritten: *mut u64,
     ) -> Result<()> {
-        Err(E_NOTIMPL.into())
+        const BUFFER_SIZE: usize = 64 * 1024;
+
+        let mut total_read = 0u64;
+        let mut total_written = 0u64;
+
+        let result = (|| -> Result<()> {
+            let destination = pstm
+                .as_ref()
+                .ok_or_else(|| windows::core::Error::from(STG_E_INVALIDPOINTER))?;
+
+            let mut buffer = [0u8; BUFFER_SIZE];
+
+            while total_read < cb {
+                let requested = (cb - total_read).min(BUFFER_SIZE as u64) as u32;
+                let mut bytes_read = 0u32;
+
+                let hr = self.Read(buffer.as_mut_ptr().cast(), requested, &mut bytes_read);
+
+                total_read += u64::from(bytes_read);
+                hr.ok()?;
+
+                if bytes_read == 0 {
+                    break;
+                }
+
+                let mut offset = 0usize;
+                let length = bytes_read as usize;
+
+                while offset < length {
+                    let mut bytes_written = 0u32;
+                    let remaining = (length - offset) as u32;
+
+                    let hr = unsafe {
+                        destination.Write(
+                            buffer[offset..length].as_ptr().cast(),
+                            remaining,
+                            Some(&mut bytes_written),
+                        )
+                    };
+
+                    total_written += u64::from(bytes_written);
+                    hr.ok()?;
+
+                    if bytes_written == 0 || bytes_written > remaining {
+                        return Err(STG_E_WRITEFAULT.into());
+                    }
+
+                    offset += bytes_written as usize;
+                }
+
+                if hr == S_FALSE {
+                    break;
+                }
+            }
+
+            Ok(())
+        })();
+
+        if !pcbread.is_null() {
+            unsafe { pcbread.write(total_read) };
+        }
+
+        if !pcbwritten.is_null() {
+            unsafe { pcbwritten.write(total_written) };
+        }
+
+        result
     }
 
     fn Commit(&self, _grfcommitflags: &STGC) -> Result<()> {
@@ -275,336 +341,4 @@ impl IStream_Impl for Stream_Impl {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::{self, Cursor, Seek};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-    use windows::Win32::System::Com::{ISequentialStream, STATFLAG_DEFAULT};
-    #[test]
-    fn reads_from_com_stream() {
-        let reader = SourceReader::seekable(std::io::Cursor::new(b"hello".to_vec()));
-        let stream: IStream = Stream::new(reader, Some(5), CancellationToken::new(), None).into();
-        let sequential: &ISequentialStream = (&stream).into();
-
-        {
-            let mut buffer = [0u8; 3];
-            let mut read = 0u32;
-
-            let hr = unsafe {
-                sequential.Read(
-                    buffer.as_mut_ptr().cast(),
-                    buffer.len() as u32,
-                    Some(&mut read),
-                )
-            };
-
-            assert_eq!(hr, S_OK);
-            assert_eq!(read, 3);
-            assert_eq!(&buffer, b"hel");
-        }
-        {
-            let mut buffer = [0u8; 2];
-            let mut read = 0u32;
-
-            let hr = unsafe {
-                sequential.Read(
-                    buffer.as_mut_ptr().cast(),
-                    buffer.len() as u32,
-                    Some(&mut read),
-                )
-            };
-
-            assert_eq!(hr, S_OK);
-            assert_eq!(read, 2);
-            assert_eq!(&buffer, b"lo");
-        }
-    }
-
-    #[test]
-    fn seekable_reader_can_seek() {
-        let mut reader = SourceReader::seekable(Cursor::new(b"hello".to_vec()));
-
-        assert_eq!(reader.seek(SeekFrom::Start(2)).unwrap(), 2);
-
-        let mut buffer = [0u8; 2];
-        reader.read_exact(&mut buffer).unwrap();
-
-        assert_eq!(&buffer, b"ll");
-    }
-
-    #[test]
-    fn stat_uses_known_size_for_streaming_reader() {
-        let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
-
-        let stream: IStream = Stream::new(reader, Some(5), CancellationToken::new(), None).into();
-        let mut stat = STATSTG::default();
-
-        unsafe {
-            stream.Stat(&mut stat, STATFLAG_DEFAULT).unwrap();
-        }
-
-        assert_eq!(stat.cbSize, 5);
-    }
-
-    #[test]
-    fn stat_fails_for_unknown_size_streaming_reader() {
-        let reader = SourceReader::streaming(std::io::Cursor::new(b"hello".to_vec()));
-
-        let stream: IStream = Stream::new(reader, None, CancellationToken::new(), None).into();
-        let mut stat = STATSTG::default();
-
-        let error = unsafe { stream.Stat(&mut stat, STATFLAG_DEFAULT) }.unwrap_err();
-
-        assert_eq!(error.code(), STG_E_INVALIDFUNCTION);
-    }
-
-    #[test]
-    fn stat_derives_size_for_unknown_seekable_reader() {
-        let reader = SourceReader::seekable(Cursor::new(b"hello".to_vec()));
-
-        let stream: IStream = Stream::new(reader, None, CancellationToken::new(), None).into();
-        let mut stat = STATSTG::default();
-
-        unsafe {
-            stream.Stat(&mut stat, STATFLAG_DEFAULT).unwrap();
-        }
-
-        assert_eq!(stat.cbSize, 5);
-    }
-
-    #[test]
-    fn com_stream_can_seek() {
-        let reader = SourceReader::seekable(Cursor::new(b"hello".to_vec()));
-
-        let stream: IStream = Stream::new(reader, None, CancellationToken::new(), None).into();
-
-        let mut position = 0u64;
-
-        unsafe {
-            stream
-                .Seek(2, STREAM_SEEK_SET, Some(&mut position))
-                .unwrap();
-        }
-
-        assert_eq!(position, 2);
-
-        let sequential: &ISequentialStream = (&stream).into();
-
-        let mut buffer = [0u8; 2];
-        let mut read = 0;
-
-        let hr = unsafe {
-            sequential.Read(
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
-                Some(&mut read),
-            )
-        };
-
-        assert_eq!(hr, S_OK);
-        assert_eq!(&buffer, b"ll");
-    }
-
-    #[test]
-    fn com_stream_seek_fails_for_streaming_reader() {
-        let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
-
-        let stream: IStream = Stream::new(reader, Some(5), CancellationToken::new(), None).into();
-
-        let error = unsafe { stream.Seek(0, STREAM_SEEK_SET, None) }.unwrap_err();
-
-        assert_eq!(error.code(), STG_E_INVALIDFUNCTION);
-    }
-
-    #[test]
-    fn read_fails_when_source_ends_before_declared_size() {
-        let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
-
-        let stream: IStream = Stream::new(reader, Some(10), CancellationToken::new(), None).into();
-        let sequential: &ISequentialStream = (&stream).into();
-
-        let mut buffer = [0u8; 10];
-        let mut read = 0u32;
-
-        let hr = unsafe {
-            sequential.Read(
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
-                Some(&mut read),
-            )
-        };
-
-        assert_eq!(hr, STG_E_READFAULT);
-        assert_eq!(read, 5);
-    }
-
-    #[test]
-    fn read_tracks_position_across_calls() {
-        let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
-
-        let stream: IStream = Stream::new(reader, Some(10), CancellationToken::new(), None).into();
-        let sequential: &ISequentialStream = (&stream).into();
-
-        let mut first = [0u8; 3];
-
-        let hr = unsafe { sequential.Read(first.as_mut_ptr().cast(), 3, None) };
-
-        assert_eq!(hr, S_OK);
-
-        let mut second = [0u8; 7];
-        let mut read = 0u32;
-
-        let hr = unsafe { sequential.Read(second.as_mut_ptr().cast(), 7, Some(&mut read)) };
-
-        assert_eq!(hr, STG_E_READFAULT);
-        assert_eq!(read, 2);
-    }
-
-    #[test]
-    fn read_returns_abort_when_cancelled_before_read() {
-        let token = CancellationToken::new();
-        let reader = SourceReader::streaming(Cursor::new(b"hello".to_vec()));
-
-        let stream: IStream = Stream::new(reader, Some(5), token.clone(), None).into();
-        let sequential: &ISequentialStream = (&stream).into();
-
-        token.cancel();
-
-        let mut buffer = [0u8; 5];
-        let mut read = u32::MAX;
-
-        let hr = unsafe {
-            sequential.Read(
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
-                Some(&mut read),
-            )
-        };
-
-        assert_eq!(hr, E_ABORT);
-        assert_eq!(read, 0);
-        assert_eq!(buffer, [0; 5]);
-    }
-
-    struct CancelOnFirstRead {
-        inner: Cursor<Vec<u8>>,
-        token: CancellationToken,
-        read_count: Arc<AtomicUsize>,
-    }
-
-    impl Read for CancelOnFirstRead {
-        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-            let len = buffer.len().min(2);
-            let count = self.inner.read(&mut buffer[..len])?;
-
-            self.read_count.fetch_add(1, Ordering::Relaxed);
-            self.token.cancel();
-
-            Ok(count)
-        }
-    }
-
-    impl Seek for CancelOnFirstRead {
-        fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
-            self.inner.seek(pos)
-        }
-    }
-
-    #[test]
-    fn read_aborts_when_cancelled_during_read() {
-        let token = CancellationToken::new();
-        let read_count = Arc::new(AtomicUsize::new(0));
-
-        let reader = SourceReader::seekable(CancelOnFirstRead {
-            inner: Cursor::new(b"hello".to_vec()),
-            token: token.clone(),
-            read_count: read_count.clone(),
-        });
-
-        let stream: IStream = Stream::new(reader, Some(5), token, None).into();
-        let sequential: &ISequentialStream = (&stream).into();
-
-        let mut buffer = [0u8; 5];
-        let mut read = 0u32;
-
-        let hr = unsafe {
-            sequential.Read(
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
-                Some(&mut read),
-            )
-        };
-
-        assert_eq!(hr, E_ABORT);
-        assert_eq!(read, 2);
-        assert_eq!(&buffer[..2], b"he");
-        assert_eq!(read_count.load(Ordering::Relaxed), 1);
-
-        // Partial reads must still update the stream position.
-        let mut position = 0u64;
-        unsafe {
-            stream
-                .Seek(0, STREAM_SEEK_CUR, Some(&mut position))
-                .unwrap();
-        }
-        assert_eq!(position, 2);
-
-        // Further reads must fail without accessing the source.
-        let mut read = u32::MAX;
-
-        let hr = unsafe {
-            sequential.Read(
-                buffer.as_mut_ptr().cast(),
-                buffer.len() as u32,
-                Some(&mut read),
-            )
-        };
-
-        assert_eq!(hr, E_ABORT);
-        assert_eq!(read, 0);
-        assert_eq!(read_count.load(Ordering::Relaxed), 1);
-    }
-    #[test]
-    fn cancellation_is_shared_between_streams() {
-        let token = CancellationToken::new();
-
-        let stream_a: IStream = Stream::new(
-            SourceReader::streaming(Cursor::new(b"aaa".to_vec())),
-            Some(3),
-            token.clone(),
-            None,
-        )
-        .into();
-
-        let stream_b: IStream = Stream::new(
-            SourceReader::streaming(Cursor::new(b"bbb".to_vec())),
-            Some(3),
-            token.clone(),
-            None,
-        )
-        .into();
-
-        token.cancel();
-
-        for stream in [&stream_a, &stream_b] {
-            let sequential: &ISequentialStream = stream.into();
-
-            let mut buffer = [0u8; 3];
-            let mut read = u32::MAX;
-
-            let hr = unsafe {
-                sequential.Read(
-                    buffer.as_mut_ptr().cast(),
-                    buffer.len() as u32,
-                    Some(&mut read),
-                )
-            };
-
-            assert_eq!(hr, E_ABORT);
-            assert_eq!(read, 0);
-        }
-    }
-}
+mod tests;
