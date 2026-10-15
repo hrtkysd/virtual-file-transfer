@@ -36,8 +36,8 @@ impl ClipboardSession {
 }
 
 #[cfg(windows)]
-pub fn copy_to_clipboard(request: TransferRequest) -> Result<ClipboardSession> {
+pub fn copy_to_clipboard(request: impl Into<TransferRequest>) -> Result<ClipboardSession> {
     Ok(ClipboardSession {
-        inner: windows::copy_to_clipboard(request)?,
+        inner: windows::copy_to_clipboard(request.into())?,
     })
 }
