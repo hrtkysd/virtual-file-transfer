@@ -11,7 +11,7 @@ mod virtual_file;
 pub mod windows;
 
 pub use cancellation::CancellationToken;
-pub use error::{Error, InputError, PlatformError, PlatformErrorKind, Result};
+pub use error::{Error, FileNameErrorReason, InputError, PlatformError, PlatformErrorKind, Result};
 pub use factory_source::FactorySource;
 pub use file_source::FileSource;
 pub use source_reader::SourceReader;

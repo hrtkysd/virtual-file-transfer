@@ -105,10 +105,6 @@ impl DataObject {
         token: CancellationToken,
         completion: Option<Arc<TransferCompletion>>,
     ) -> crate::Result<Self> {
-        if files.is_empty() {
-            return Err(crate::Error::InvalidInput(crate::InputError::EmptyTransfer));
-        }
-
         validate_files(&files)?;
 
         Ok(Self {

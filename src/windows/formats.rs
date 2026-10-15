@@ -73,7 +73,6 @@ fn create_file_descriptor(metadata: &FileDescriptorMetadata<'_>) -> WindowsResul
     let name_utf16: Vec<u16> = normalized_name.encode_utf16().collect();
 
     let mut file_name = [0u16; 260];
-    file_name[..name_utf16.len()].copy_from_slice(&name_utf16);
 
     if name_utf16.len() >= file_name.len() {
         return Err(WindowsError::new(

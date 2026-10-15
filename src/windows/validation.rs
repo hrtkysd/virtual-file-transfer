@@ -1,22 +1,36 @@
-use crate::{Error, InputError, PlatformError, PlatformErrorKind, Result, VirtualFile};
+use crate::{Error, FileNameErrorReason, InputError, Result, VirtualFile};
 use std::collections::HashSet;
 use windows::Win32::Foundation::MAX_PATH;
 
 pub(crate) fn validate_file_name(name: &str) -> Result<()> {
     // FILEDESCRIPTORW::cFileName includes the terminating NUL.
-    if name.encode_utf16().count() >= MAX_PATH as usize {
-        return Err(unsupported(name, "path exceeds FILEDESCRIPTORW limit"));
-    }
+    let actual = name.encode_utf16().count();
+    let max = MAX_PATH as usize - 1;
 
+    if actual > max {
+        return Err(Error::InvalidInput(InputError::InvalidFileName {
+            name: name.to_owned(),
+            reason: FileNameErrorReason::TooLong { actual, max },
+        }));
+    }
     // Both separators are treated as directory separators.
     for component in name.split(['/', '\\']) {
-        validate_component(component).map_err(|reason| unsupported(name, reason))?;
+        validate_component(component).map_err(|reason| {
+            Error::InvalidInput(InputError::InvalidFileName {
+                name: name.to_owned(),
+                reason,
+            })
+        })?;
     }
 
     Ok(())
 }
 
-pub(crate) fn validate_files(files: &Vec<VirtualFile>) -> Result<()> {
+pub(crate) fn validate_files(files: &[VirtualFile]) -> Result<()> {
+    if files.is_empty() {
+        return Err(Error::InvalidInput(InputError::EmptyTransfer));
+    }
+
     let mut paths = HashSet::with_capacity(files.len());
 
     for file in files {
@@ -27,7 +41,6 @@ pub(crate) fn validate_files(files: &Vec<VirtualFile>) -> Result<()> {
         }
     }
 
-    // A file cannot also be a parent directory.
     for path in &paths {
         for (index, ch) in path.char_indices() {
             if ch == '/' && paths.contains(&path[..index]) {
@@ -43,21 +56,23 @@ fn normalize_path(path: &str) -> String {
     path.replace('\\', "/").to_lowercase()
 }
 
-fn validate_component(component: &str) -> std::result::Result<(), &'static str> {
+fn validate_component(component: &str) -> std::result::Result<(), FileNameErrorReason> {
     if component.is_empty() || matches!(component, "." | "..") {
-        return Err("invalid path component");
+        return Err(FileNameErrorReason::InvalidComponent(component.to_owned()));
     }
 
     if component.ends_with(' ') || component.ends_with('.') {
-        return Err("trailing space or trailing period");
+        return Err(FileNameErrorReason::TrailingSpaceOrPeriod(
+            component.to_owned(),
+        ));
     }
 
-    if component.chars().any(is_invalid_character) {
-        return Err("invalid character");
+    if let Some(ch) = component.chars().find(|&ch| is_invalid_character(ch)) {
+        return Err(FileNameErrorReason::InvalidCharacter(ch));
     }
 
     if is_reserved_name(component) {
-        return Err("reserved device name");
+        return Err(FileNameErrorReason::ReservedName(component.to_owned()));
     }
 
     Ok(())
@@ -97,11 +112,4 @@ fn is_reserved_name(component: &str) -> bool {
             "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
         )
     })
-}
-
-fn unsupported(name: &str, reason: &str) -> Error {
-    Error::Platform(PlatformError::new(
-        PlatformErrorKind::UnsupportedFileName,
-        format!("unsupported Windows path {name:?}: {reason}"),
-    ))
 }
