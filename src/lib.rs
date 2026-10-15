@@ -9,16 +9,19 @@ mod virtual_file;
 #[cfg(windows)]
 pub mod windows;
 
+pub use cancellation::CancellationToken;
 pub use error::{Error, InputError, PlatformError, PlatformErrorKind, Result};
 pub use factory_source::FactorySource;
 pub use file_source::FileSource;
 pub use source_reader::SourceReader;
-pub use transfer::{TransferHandle, TransferRequest, TransferStatus};
+pub use transfer::{TransferEffect, TransferHandle, TransferRequest, TransferStatus};
 pub use virtual_file::VirtualFile;
 
 #[cfg(windows)]
-pub fn begin_drag(request: TransferRequest) -> Result<TransferHandle> {
-    windows::begin_drag(request)
+pub fn begin_drag(
+    request: impl Into<TransferRequest>,
+) -> Result<TransferHandle> {
+    windows::begin_drag(request.into())
 }
 
 #[cfg(windows)]
