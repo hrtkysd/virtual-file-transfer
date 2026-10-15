@@ -15,16 +15,12 @@ use windows::Win32::System::Com::IDataObject;
 use windows::Win32::System::Ole::{OleInitialize, OleUninitialize};
 
 use crate::TransferRequest;
-use crate::error::PlatformErrorKind;
-
-use self::error::from_windows_error;
 
 pub(crate) use self::clipboard::{ClipboardSession, copy_to_clipboard};
 pub(crate) use self::drag_drop::begin_drag;
 
-pub fn create_data_object(request: TransferRequest) -> crate::Result<IDataObject> {
-    data_object::create_data_object(request)
-        .map_err(|error| from_windows_error(PlatformErrorKind::TransferFailed, error))
+pub fn create_data_object(request: impl Into<TransferRequest>) -> crate::Result<IDataObject> {
+    data_object::create_data_object(request.into())
 }
 
 pub(crate) struct OleContext {

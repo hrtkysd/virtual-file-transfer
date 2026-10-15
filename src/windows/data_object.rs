@@ -4,6 +4,7 @@ use super::formats::{
     FileDescriptorMetadata, create_file_group_descriptor_medium, file_transfer_formats,
 };
 use super::stream::create_stream_medium;
+use super::validation::validate_files;
 
 use self::async_operation::AsyncState;
 
@@ -14,7 +15,7 @@ use crate::virtual_file::VirtualFile;
 use std::sync::{Arc, Mutex};
 
 use windows::Win32::Foundation::{
-    DV_E_DVASPECT, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_FAIL, E_INVALIDARG, E_NOTIMPL,
+    DV_E_DVASPECT, DV_E_FORMATETC, DV_E_LINDEX, DV_E_TYMED, E_FAIL, E_NOTIMPL,
     OLE_E_ADVISENOTSUPPORTED, S_OK,
 };
 use windows::Win32::System::Com::{
@@ -30,7 +31,7 @@ enum DataRequest {
     ContentsUnspecified,
 }
 
-pub(crate) fn create_data_object(request: TransferRequest) -> windows::core::Result<IDataObject> {
+pub(crate) fn create_data_object(request: TransferRequest) -> crate::Result<IDataObject> {
     let TransferRequest {
         files,
         cancellation,
@@ -103,10 +104,12 @@ impl DataObject {
         files: Vec<VirtualFile>,
         token: CancellationToken,
         completion: Option<Arc<TransferCompletion>>,
-    ) -> Result<Self> {
+    ) -> crate::Result<Self> {
         if files.is_empty() {
-            return Err(E_INVALIDARG.into());
+            return Err(crate::Error::InvalidInput(crate::InputError::EmptyTransfer));
         }
+
+        validate_files(&files)?;
 
         Ok(Self {
             files,
@@ -255,7 +258,7 @@ mod tests {
     use std::io;
 
     use crate::cancellation::CancellationToken;
-    use crate::{FileSource, SourceReader};
+    use crate::{Error, FileSource, InputError, SourceReader, TransferRequest};
 
     use windows::Win32::Foundation::{DV_E_LINDEX, E_ABORT};
     use windows::Win32::System::Com::{
@@ -263,7 +266,6 @@ mod tests {
     };
     use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
     use windows::Win32::System::Ole::ReleaseStgMedium;
-
     use windows::Win32::UI::Shell::{FD_FILESIZE, FD_UNICODE, FILEDESCRIPTORW};
 
     struct StubSource;
@@ -494,5 +496,66 @@ mod tests {
             .expect("GetData should reject an invalid lindex");
 
         assert_eq!(error.code(), DV_E_LINDEX);
+    }
+
+    fn file(name: &str) -> VirtualFile {
+        VirtualFile::new(name, Box::new(StubSource)).unwrap()
+    }
+
+    #[test]
+    fn accepts_valid_file_paths() {
+        let files = vec![
+            file("folder/a.txt"),
+            file("folder/sub/b.txt"),
+            file("other/c.txt"),
+        ];
+
+        assert!(DataObject::new(files, CancellationToken::new(), None).is_ok());
+    }
+
+    #[test]
+    fn rejects_duplicate_file_paths() {
+        let files = vec![file("folder/a.txt"), file(r"folder\a.txt")];
+
+        let result = DataObject::new(files, CancellationToken::new(), None);
+
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput(InputError::DuplicatePath))
+        ));
+    }
+
+    #[test]
+    fn rejects_file_directory_conflict() {
+        let files = vec![file("folder"), file("folder/sub/a.txt")];
+
+        let result = DataObject::new(files, CancellationToken::new(), None);
+
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput(InputError::ConflictPath))
+        ));
+    }
+
+    #[test]
+    fn create_data_object_propagates_validation_error() {
+        let request = TransferRequest::new(vec![file("a.txt"), file("A.txt")]);
+
+        let result = super::create_data_object(request);
+
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput(InputError::DuplicatePath))
+        ));
+    }
+
+    #[test]
+    fn rejects_empty_transfer() {
+        let result = DataObject::new(vec![], CancellationToken::new(), None);
+
+        assert!(matches!(
+            result,
+            Err(Error::InvalidInput(InputError::EmptyTransfer))
+        ));
     }
 }

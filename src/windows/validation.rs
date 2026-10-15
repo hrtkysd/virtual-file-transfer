@@ -1,4 +1,5 @@
-use crate::{Error, PlatformError, PlatformErrorKind, Result};
+use crate::{Error, InputError, PlatformError, PlatformErrorKind, Result, VirtualFile};
+use std::collections::HashSet;
 use windows::Win32::Foundation::MAX_PATH;
 
 pub(crate) fn validate_file_name(name: &str) -> Result<()> {
@@ -13,6 +14,33 @@ pub(crate) fn validate_file_name(name: &str) -> Result<()> {
     }
 
     Ok(())
+}
+
+pub(crate) fn validate_files(files: &Vec<VirtualFile>) -> Result<()> {
+    let mut paths = HashSet::with_capacity(files.len());
+
+    for file in files {
+        let path = normalize_path(file.name());
+
+        if !paths.insert(path) {
+            return Err(Error::InvalidInput(InputError::DuplicatePath));
+        }
+    }
+
+    // A file cannot also be a parent directory.
+    for path in &paths {
+        for (index, ch) in path.char_indices() {
+            if ch == '/' && paths.contains(&path[..index]) {
+                return Err(Error::InvalidInput(InputError::ConflictPath));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn normalize_path(path: &str) -> String {
+    path.replace('\\', "/").to_lowercase()
 }
 
 fn validate_component(component: &str) -> std::result::Result<(), &'static str> {

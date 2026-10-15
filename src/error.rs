@@ -14,8 +14,11 @@ pub enum Error {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputError {
+    DuplicatePath,
+    ConflictPath,
     EmptyName,
     InvalidFileName,
+    EmptyTransfer,
 }
 
 #[non_exhaustive]
@@ -58,12 +61,11 @@ impl From<io::Error> for Error {
 impl fmt::Display for InputError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::EmptyName => {
-                write!(f, "file name must not be empty")
-            }
-            Self::InvalidFileName => {
-                write!(f, "invalid file name")
-            }
+            Self::EmptyName => write!(f, "file name must not be empty"),
+            Self::InvalidFileName => write!(f, "invalid file name"),
+            Self::EmptyTransfer => write!(f, "invalid transfer"),
+            Self::DuplicatePath => write!(f, "duplicate file path"),
+            Self::ConflictPath => write!(f, "file path conflicts with a parent path"),
         }
     }
 }
