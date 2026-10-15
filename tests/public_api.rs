@@ -1,6 +1,6 @@
 use virtual_file_transfer::{
-    CancellationToken, FactorySource, NativeStatusCode, SourceReader, TransferEffect, TransferRequest,
-    TransferStatus, VirtualFile,
+    CancellationToken, FactorySource, NativeStatusCode, SourceReader, TransferEffect,
+    TransferRequest, TransferStatus, VirtualFile,
 };
 
 use std::io::Cursor;
@@ -25,7 +25,7 @@ fn public_transfer_api_is_usable() {
 
     let status = TransferStatus::AsyncFinished {
         succeeded: true,
-        native_code: NativeStatusCode::WindowsHResult(0/*=S_OK*/),
+        native_code: NativeStatusCode::WindowsHResult(0 /*=S_OK*/),
         effect,
     };
 

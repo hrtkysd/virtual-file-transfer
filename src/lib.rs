@@ -15,7 +15,9 @@ pub use error::{Error, FileNameErrorReason, InputError, PlatformError, PlatformE
 pub use factory_source::FactorySource;
 pub use file_source::FileSource;
 pub use source_reader::SourceReader;
-pub use transfer::{NativeStatusCode, TransferEffect, TransferHandle, TransferRequest, TransferStatus};
+pub use transfer::{
+    NativeStatusCode, TransferEffect, TransferHandle, TransferRequest, TransferStatus
+};
 pub use virtual_file::VirtualFile;
 
 #[cfg(windows)]
