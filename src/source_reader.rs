@@ -1,10 +1,16 @@
 use std::io::{self, Read, Seek, SeekFrom};
 
+use crate::source_reader::ReaderKind::{Seekable, Streaming};
+
+pub struct SourceReader {
+    inner: ReaderKind,
+}
+
 pub trait ReadSeek: Read + Seek {}
 
 impl<T> ReadSeek for T where T: Read + Seek {}
 
-pub enum SourceReader {
+enum ReaderKind {
     Streaming(Box<dyn Read + Send>),
     Seekable(Box<dyn ReadSeek + Send>),
 }
@@ -20,14 +26,18 @@ impl SourceReader {
     where
         R: Read + Send + 'static,
     {
-        Self::Streaming(Box::new(reader))
+        Self {
+            inner: Streaming(Box::new(reader)),
+        }
     }
 
     pub fn seekable<R>(reader: R) -> Self
     where
         R: Read + Seek + Send + 'static,
     {
-        Self::Seekable(Box::new(reader))
+        Self {
+            inner: Seekable(Box::new(reader)),
+        }
     }
 
     #[cfg(feature = "spool")]
@@ -40,22 +50,26 @@ impl SourceReader {
         io::copy(&mut reader, &mut file)?;
         file.seek(SeekFrom::Start(0))?;
 
-        Ok(Self::Seekable(Box::new(file)))
+        Ok(Self {
+            inner: Seekable(Box::new(file)),
+        })
     }
 
     pub(crate) fn seek(&mut self, position: SeekFrom) -> Result<u64, SourceReaderError> {
-        match self {
-            Self::Seekable(reader) => reader.seek(position).map_err(|_| SourceReaderError::Io),
+        match &mut self.inner {
+            ReaderKind::Seekable(reader) => {
+                reader.seek(position).map_err(|_| SourceReaderError::Io)
+            }
 
-            Self::Streaming(_) => Err(SourceReaderError::NotSeekable),
+            ReaderKind::Streaming(_) => Err(SourceReaderError::NotSeekable),
         }
     }
 
     pub(crate) fn try_size(&mut self) -> io::Result<Option<u64>> {
-        match self {
-            Self::Streaming(_) => Ok(None),
+        match &mut self.inner {
+            ReaderKind::Streaming(_) => Ok(None),
 
-            Self::Seekable(reader) => {
+            ReaderKind::Seekable(reader) => {
                 let current = reader.stream_position()?;
                 let size = reader.seek(SeekFrom::End(0))?;
                 reader.seek(SeekFrom::Start(current))?;
@@ -68,9 +82,9 @@ impl SourceReader {
 
 impl Read for SourceReader {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        match self {
-            Self::Streaming(reader) => reader.read(buffer),
-            Self::Seekable(reader) => reader.read(buffer),
+        match &mut self.inner {
+            ReaderKind::Streaming(reader) => reader.read(buffer),
+            ReaderKind::Seekable(reader) => reader.read(buffer),
         }
     }
 }
