@@ -16,13 +16,20 @@ pub enum TransferEffect {
 
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NativeStatusCode {
+    WindowsHResult(i32),
+    // add here for other operating system.
+}
+
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferStatus {
     Pending,
     Cancelled,
     Dropped,
     AsyncFinished {
         succeeded: bool,
-        native_code: i32,
+        native_code: NativeStatusCode,
         effect: TransferEffect,
     },
     Failed,

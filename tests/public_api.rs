@@ -1,5 +1,5 @@
 use virtual_file_transfer::{
-    CancellationToken, FactorySource, SourceReader, TransferEffect, TransferRequest,
+    CancellationToken, FactorySource, NativeStatusCode, SourceReader, TransferEffect, TransferRequest,
     TransferStatus, VirtualFile,
 };
 
@@ -25,7 +25,7 @@ fn public_transfer_api_is_usable() {
 
     let status = TransferStatus::AsyncFinished {
         succeeded: true,
-        native_code: 0,
+        native_code: NativeStatusCode::WindowsHResult(0/*=S_OK*/),
         effect,
     };
 

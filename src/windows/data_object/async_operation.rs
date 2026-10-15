@@ -1,5 +1,5 @@
 use super::{DataObject, DataObject_Impl};
-use crate::transfer::{TransferEffect, TransferStatus};
+use crate::transfer::{NativeStatusCode, TransferEffect, TransferStatus};
 use windows::Win32::Foundation::E_FAIL;
 use windows::Win32::System::Com::IBindCtx;
 use windows::Win32::UI::Shell::IDataObjectAsyncCapability_Impl;
@@ -35,7 +35,7 @@ impl TransferResult {
 
         TransferStatus::AsyncFinished {
             succeeded: self.hr.is_ok(),
-            native_code: self.hr.0,
+            native_code: NativeStatusCode::WindowsHResult(self.hr.0),
             effect,
         }
     }
