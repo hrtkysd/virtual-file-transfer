@@ -16,7 +16,7 @@ pub use factory_source::FactorySource;
 pub use file_source::FileSource;
 pub use source_reader::SourceReader;
 pub use transfer::{
-    NativeStatusCode, TransferEffect, TransferHandle, TransferRequest, TransferStatus
+    NativeStatusCode, TransferEffect, TransferHandle, TransferRequest, TransferStatus,
 };
 pub use virtual_file::VirtualFile;
 
