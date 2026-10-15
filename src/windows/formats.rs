@@ -4,7 +4,7 @@ use std::ptr;
 
 use std::sync::OnceLock;
 
-use windows::Win32::Foundation::GlobalFree;
+use windows::Win32::Foundation::{E_INVALIDARG, GlobalFree};
 use windows::Win32::System::Com::{STGMEDIUM, STGMEDIUM_0, TYMED_HGLOBAL};
 use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 use windows::Win32::System::Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock};
@@ -75,6 +75,14 @@ fn create_file_descriptor(metadata: &FileDescriptorMetadata<'_>) -> WindowsResul
     let mut file_name = [0u16; 260];
     file_name[..name_utf16.len()].copy_from_slice(&name_utf16);
 
+    if name_utf16.len() >= file_name.len() {
+        return Err(WindowsError::new(
+            E_INVALIDARG,
+            "file name exceeds FILEDESCRIPTORW capacity",
+        ));
+    }
+
+    file_name[..name_utf16.len()].copy_from_slice(&name_utf16);
     descriptor.cFileName = file_name;
 
     Ok(descriptor)
@@ -166,5 +174,24 @@ mod tests {
         let name = String::from_utf16(&file_name[..length]).unwrap();
 
         assert_eq!(name, r"reports\2026\report.csv");
+    }
+
+    #[test]
+    fn validates_descriptor_name_length() {
+        // 259 UTF-16 code units + NUL: valid
+        let valid_name = "a".repeat(259);
+        let metadata = FileDescriptorMetadata {
+            name: &valid_name,
+            size: None,
+        };
+        assert!(create_file_descriptor(&metadata).is_ok());
+
+        // 260 UTF-16 code units + NUL: invalid
+        let invalid_name = "a".repeat(260);
+        let metadata = FileDescriptorMetadata {
+            name: &invalid_name,
+            size: None,
+        };
+        assert!(create_file_descriptor(&metadata).is_err());
     }
 }
