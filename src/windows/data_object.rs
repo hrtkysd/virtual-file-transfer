@@ -257,11 +257,14 @@ mod tests {
     use crate::cancellation::CancellationToken;
     use crate::{FileSource, SourceReader};
 
-    use windows::Win32::Foundation::E_ABORT;
+    use windows::Win32::Foundation::{DV_E_LINDEX, E_ABORT};
     use windows::Win32::System::Com::{
-        DVASPECT_CONTENT, FORMATETC, IDataObject, ISequentialStream, TYMED_ISTREAM,
+        DVASPECT_CONTENT, FORMATETC, IDataObject, ISequentialStream, TYMED_HGLOBAL, TYMED_ISTREAM,
     };
+    use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
     use windows::Win32::System::Ole::ReleaseStgMedium;
+
+    use windows::Win32::UI::Shell::{FD_FILESIZE, FD_UNICODE, FILEDESCRIPTORW};
 
     struct StubSource;
 
@@ -327,5 +330,169 @@ mod tests {
 
         assert_eq!(hr, E_ABORT);
         assert_eq!(bytes_read, 0);
+    }
+
+    struct MemorySource(&'static [u8]);
+
+    impl FileSource for MemorySource {
+        fn open(&self) -> io::Result<SourceReader> {
+            Ok(SourceReader::seekable(io::Cursor::new(self.0)))
+        }
+    }
+
+    #[test]
+    fn get_data_returns_multiple_file_descriptors() {
+        const LARGE_SIZE: u64 = (1u64 << 32) + 123;
+
+        let files = vec![
+            VirtualFile::new("hello.txt", Box::new(MemorySource(b"hello")))
+                .unwrap()
+                .with_size(5),
+            VirtualFile::new("large.bin", Box::new(MemorySource(b"unused")))
+                .unwrap()
+                .with_size(LARGE_SIZE),
+        ];
+
+        let data_object: IDataObject = DataObject::new(files, CancellationToken::new(), None)
+            .unwrap()
+            .into();
+
+        let format = FORMATETC {
+            cfFormat: file_transfer_formats().unwrap().file_descriptor as u16,
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: -1,
+            tymed: TYMED_HGLOBAL.0 as u32,
+        };
+
+        let mut medium = unsafe { data_object.GetData(&format) }.unwrap();
+
+        assert_eq!(medium.tymed, TYMED_HGLOBAL.0 as u32);
+
+        let hglobal = unsafe { medium.u.hGlobal };
+
+        let required_size = std::mem::size_of::<u32>() + 2 * std::mem::size_of::<FILEDESCRIPTORW>();
+
+        assert!(unsafe { GlobalSize(hglobal) } >= required_size);
+
+        let ptr = unsafe { GlobalLock(hglobal) }.cast::<u8>();
+        assert!(!ptr.is_null());
+
+        // FILEGROUPDESCRIPTORW:
+        //   UINT cItems;
+        //   FILEDESCRIPTORW fgd[cItems];
+        //
+        // The descriptor array begins at offset 4, which may
+        // not satisfy FILEDESCRIPTORW's alignment requirements.
+        let (count, descriptors) = unsafe {
+            let count = ptr.cast::<u32>().read_unaligned();
+
+            let descriptors = (0..2)
+                .map(|index| {
+                    ptr.add(
+                        std::mem::size_of::<u32>() + index * std::mem::size_of::<FILEDESCRIPTORW>(),
+                    )
+                    .cast::<FILEDESCRIPTORW>()
+                    .read_unaligned()
+                })
+                .collect::<Vec<_>>();
+
+            _ = GlobalUnlock(hglobal);
+            ReleaseStgMedium(&mut medium);
+
+            (count, descriptors)
+        };
+
+        assert_eq!(count, 2);
+
+        for (descriptor, (expected_name, expected_size)) in descriptors
+            .iter()
+            .zip([("hello.txt", 5u64), ("large.bin", LARGE_SIZE)])
+        {
+            let filename = descriptor.cFileName;
+            let flags = descriptor.dwFlags;
+            let size_high = descriptor.nFileSizeHigh;
+            let size_low = descriptor.nFileSizeLow;
+
+            let name_end = filename.iter().position(|&c| c == 0).unwrap();
+
+            let name = String::from_utf16(&filename[..name_end]).unwrap();
+
+            let size = (u64::from(size_high) << 32) | u64::from(size_low);
+
+            assert_eq!(name, expected_name);
+            assert_eq!(size, expected_size);
+
+            assert_ne!(flags & FD_FILESIZE.0 as u32, 0);
+            assert_ne!(flags & FD_UNICODE.0 as u32, 0);
+        }
+    }
+
+    #[test]
+    fn get_data_returns_contents_by_lindex() {
+        let files = vec![
+            VirtualFile::new("first.txt", Box::new(MemorySource(b"first")))
+                .unwrap()
+                .with_size(5),
+            VirtualFile::new("second.txt", Box::new(MemorySource(b"second")))
+                .unwrap()
+                .with_size(6),
+        ];
+
+        let data_object: IDataObject = DataObject::new(files, CancellationToken::new(), None)
+            .unwrap()
+            .into();
+
+        let mut format = FORMATETC {
+            cfFormat: file_transfer_formats().unwrap().file_contents as u16,
+            ptd: std::ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT.0,
+            lindex: 0,
+            tymed: TYMED_ISTREAM.0 as u32,
+        };
+
+        for (index, expected) in [b"first".as_slice(), b"second".as_slice()]
+            .into_iter()
+            .enumerate()
+        {
+            format.lindex = index as i32;
+
+            let mut medium = unsafe { data_object.GetData(&format) }.unwrap();
+
+            assert_eq!(medium.tymed, TYMED_ISTREAM.0 as u32);
+
+            // Clone the COM reference before releasing STGMEDIUM.
+            let stream = unsafe { (*medium.u.pstm).as_ref().unwrap().clone() };
+
+            unsafe {
+                ReleaseStgMedium(&mut medium);
+            }
+
+            let sequential: &ISequentialStream = (&stream).into();
+
+            let mut buffer = vec![0u8; expected.len()];
+            let mut bytes_read = 0u32;
+
+            let hr = unsafe {
+                sequential.Read(
+                    buffer.as_mut_ptr().cast(),
+                    buffer.len() as u32,
+                    Some(&mut bytes_read),
+                )
+            };
+
+            assert_eq!(hr, S_OK);
+            assert_eq!(bytes_read as usize, expected.len());
+            assert_eq!(buffer, expected);
+        }
+
+        // Index outside the available file range.
+        format.lindex = 2;
+
+        let error = unsafe { data_object.GetData(&format) }
+            .err()
+            .expect("GetData should reject an invalid lindex");
+
+        assert_eq!(error.code(), DV_E_LINDEX);
     }
 }
