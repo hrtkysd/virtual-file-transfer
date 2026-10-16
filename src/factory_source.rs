@@ -1,6 +1,13 @@
 use crate::{FileSource, SourceReader};
 use std::io;
 
+/// Adapts a reader-producing closure into a [`FileSource`].
+///
+/// The closure is called whenever the receiving application requests a new
+/// stream. It must create an independent reader on every invocation.
+///
+/// Use a closure that implements `Fn() -> io::Result<SourceReader>` and is
+/// `Send + Sync`.
 pub struct FactorySource<F> {
     open: F,
 }
@@ -9,6 +16,10 @@ impl<F> FactorySource<F>
 where
     F: Fn() -> io::Result<SourceReader> + Send + Sync,
 {
+    /// Creates a file source using the supplied reader factory.
+    ///
+    /// The factory is evaluated lazily when [`FileSource::open`] is called,
+    /// rather than when this value is constructed.
     pub fn new(open: F) -> Self {
         Self { open }
     }
