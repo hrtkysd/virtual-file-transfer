@@ -68,6 +68,22 @@ Call `start_drag()` from an appropriate mouse event in an application with a Win
 
 Pass a `Vec<VirtualFile>` to transfer multiple files. The same underlying representation is used for clipboard transfers.
 
+### File names and relative paths
+
+Virtual file names may contain relative paths, allowing receiving applications such as Windows Explorer to create nested files:
+
+```rust
+let file = VirtualFile::new(
+    "reports/2026/report.txt",
+    Box::new(source),
+)?;
+```
+
+File names are validated when creating a `VirtualFile`.
+Transfers also reject empty file lists, duplicate paths, and paths that conflict with another file.
+
+On Windows, invalid characters, reserved device names, and trailing spaces or periods in path components are rejected.
+
 ### Cancellation
 
 Transfers can be cancelled using a `CancellationToken`.
@@ -185,12 +201,14 @@ src/
 ├── virtual_file.rs            Name, size metadata, and source of one virtual file
 ├── file_source.rs             FileSource trait
 ├── source_reader.rs           Streaming / Seekable reader and size derivation
+├── validation.rs              Common file name and path validation
 ├── factory_source.rs          Closure-based FileSource implementation
 ├── transfer.rs                TransferRequest and transfer status
 ├── cancellation.rs            CancellationToken
 ├── error.rs                   Public error types
 ├── windows.rs                 Windows module entry point and OLE initialization
 └── windows/
+    ├── validation.rs          Windows-specific path validation
     ├── data_object.rs         IDataObject; dispatch by format and file index
     ├── data_object/
     │   └── async_operation.rs IDataObjectAsyncCapability and async operation lifecycle
@@ -204,6 +222,7 @@ src/
 examples/
 ├── simple_drag.rs             Drag a file backed by in-memory data
 ├── zip_drag.rs                Drag multiple ZIP entries without extracting first
+├── large_drag.rs              Transfer a generated file larger than 4 GiB
 ├── slow_drag.rs               Slow drag transfer and cancellation testing
 └── slow_clipboard.rs          Slow clipboard transfer and cancellation testing
 ```
@@ -218,6 +237,7 @@ In the Windows backend, `IDataObject::GetData` returns either the group of file 
 cargo test
 cargo run --example simple_drag
 cargo run --example zip_drag
+cargo run --release --example large_drag
 cargo run --example slow_drag
 cargo run --example slow_clipboard
 ```
@@ -240,13 +260,15 @@ This is not yet a compatibility-tested replacement for every Windows drag-and-dr
 - Unknown-size, non-seekable streams cannot currently be transferred to the tested Explorer path without first making the size available, for example through explicit spooling.
 - Some `IStream` methods, including `Clone`, are not implemented.
 - Cancellation has been tested with Windows Explorer for synchronous and asynchronous drag-and-drop transfers, as well as clipboard transfers. Other receiving applications need further testing.
-- Large transfers, error propagation, and source-process lifetime need more testing.
 - Individual `IStream::Read` calls are synchronous. A source backed by network I/O may block while supplying data, even during an asynchronous transfer.
 - Explicit spooling trades temporary storage and startup latency for a determinable size and seekability.
+- Large-file streaming was tested with Windows Explorer using a 4 GiB + 1 byte generated file. The transferred contents were verified, and memory usage remained bounded during the test.
+- Source read errors were verified to propagate as STG_E_READFAULT. The source reader was released following the failed transfer.
+- Ten repeated transfers showed no sustained increase in memory usage or handle count. Longer-running tests and source-process lifetime scenarios still need broader verification.
 
 ## Next steps
 
-Near term: improve COM compatibility tests, harden error handling and file-name validation, test explicit spooling with large and failing sources, document clipboard lifetime behavior, and refine the lower-level `IDataObject` API so applications can retain control of their own drag-and-drop flow.
+Near term: improve COM compatibility tests, extend explicit spooling tests to large and failing sources, document clipboard lifetime behavior, and refine the lower-level `IDataObject` API so applications can retain control of their own drag-and-drop flow.
 
 Later: a C ABI and optional C++/C# wrappers, and a macOS backend. ZIP and HTTP integrations are candidates for separate adapters rather than required dependencies of the core crate.
 

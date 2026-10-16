@@ -2,10 +2,20 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 use crate::source_reader::ReaderKind::{Seekable, Streaming};
 
+/// Supplies bytes to the receiver as either a sequential or seekable stream.
+///
+/// Use [`Self::streaming`] for `Read`-only sources, [`Self::seekable`] for
+/// `Read + Seek` sources, or `Self::spooled` (feature `spool`) to materialize
+/// a source into temporary storage.
+///
+/// The selected reader kind determines whether `IStream::Seek` can succeed
+/// and whether the stream size can be derived when not explicitly provided.
 pub struct SourceReader {
     inner: ReaderKind,
 }
 
+/// Internal trait alias-like bound for readers that support both `Read`
+/// and `Seek`.
 pub trait ReadSeek: Read + Seek {}
 
 impl<T> ReadSeek for T where T: Read + Seek {}
@@ -22,6 +32,11 @@ pub(crate) enum SourceReaderError {
 }
 
 impl SourceReader {
+    /// Wraps a sequential `Read` source without materializing its contents.
+    ///
+    /// The reader does not support seeking, and its length cannot be derived.
+    /// Supply a size using [`crate::VirtualFile::with_size`]
+    /// when the receiving application requires one.
     pub fn streaming<R>(reader: R) -> Self
     where
         R: Read + Send + 'static,
@@ -31,6 +46,11 @@ impl SourceReader {
         }
     }
 
+    /// Wraps a `Read + Seek` source that supports random access.
+    ///
+    /// When a file size is not provided, the length can be derived by seeking to
+    /// the end and restoring the original position. The underlying reader must
+    /// support those operations reliably.
     pub fn seekable<R>(reader: R) -> Self
     where
         R: Read + Seek + Send + 'static,
@@ -40,6 +60,19 @@ impl SourceReader {
         }
     }
 
+    /// Copies the complete source into a temporary file and returns a seekable
+    /// reader backed by that file.
+    ///
+    /// Spooling is explicit and finishes before this method returns. It trades
+    /// temporary disk usage and startup latency for seekability and a derivable
+    /// size. The temporary file's lifetime is managed with the returned reader.
+    ///
+    /// Requires the `spool` feature.
+    ///
+    /// # Errors
+    ///
+    /// Returns an I/O error if creating, writing, seeking, or reading the
+    /// temporary file or source fails.
     #[cfg(feature = "spool")]
     pub fn spooled<R>(reader: R) -> io::Result<Self>
     where

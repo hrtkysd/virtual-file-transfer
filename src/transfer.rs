@@ -4,50 +4,100 @@ use super::virtual_file::VirtualFile;
 
 use std::sync::{Arc, Mutex};
 
+/// The data-transfer operation reported by a receiving application.
+///
+/// An effect describes what operation was requested or reported, not whether
+/// reading the file contents ultimately succeeded. Check [`TransferStatus`]
+/// for the reported outcome.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferEffect {
+    /// No copy, move, or link effect was reported.
     None,
+    /// The receiver reported a copy operation.
     Copy,
+    /// The receiver reported a move operation.
     Move,
+    /// The receiver reported a link operation.
     Link,
+    /// An unrecognized platform-specific effect, retaining its raw value.
     Other(u32),
 }
 
+/// A platform-specific completion status reported for a transfer.
+///
+/// The numeric value is intended for diagnostics. Interpret it according to
+/// the originating platform, and use [`TransferStatus`] for the overall
+/// transfer state.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeStatusCode {
+    /// A Windows `HRESULT`, stored in its original signed 32-bit representation.
+    ///
+    /// For example, `0x8003001E` represents `STG_E_READFAULT`.
     WindowsHResult(i32),
     // add here for other operating system.
 }
 
+/// The observed state of a drag-and-drop operation.
+///
+/// A successful drop and successful delivery of file contents are different
+/// events for receivers using asynchronous OLE transfers. In particular,
+/// [`Self::Dropped`] is not proof that the receiver finished reading data.
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransferStatus {
+    /// No terminal drag or asynchronous completion status has been recorded.
     Pending,
+    /// The operation was cancelled, including cancellation observed during reading.
     Cancelled,
+    /// The receiver accepted the drop operation.
+    ///
+    /// An asynchronous receiver may still be reading the contents. This status
+    /// does not guarantee that the resulting destination file was completed.
     Dropped,
+    /// The receiver reported completion of an asynchronous transfer.
+    ///
+    /// Inspect `succeeded`, `native_code`, and `effect` together rather than
+    /// assuming that a non-`None` effect means success.
     AsyncFinished {
+        /// Whether the receiver reported successful completion.
         succeeded: bool,
+        /// The platform-specific completion code reported by the receiver.
         native_code: NativeStatusCode,
+        /// The reported copy, move, link, or other transfer effect.
         effect: TransferEffect,
     },
+    /// The reported copy, move, link, or other transfer effect.
     Failed,
 }
 
+/// A set of virtual files and a cancellation token for one transfer.
+///
+/// Create a request when you need access to its cancellation token before
+/// starting a blocking drag operation. Functions accepting
+/// `Into<TransferRequest>` can also take a `Vec<VirtualFile>` directly.
 pub struct TransferRequest {
     pub(crate) files: Vec<VirtualFile>,
     pub(crate) cancellation: CancellationToken,
 }
 
 impl TransferRequest {
+    /// Creates a transfer request containing the supplied virtual files.
+    ///
+    /// The request starts with a new, non-cancelled token. File names and
+    /// transfer-level conflicts are validated when the transfer data object is
+    /// created, not by this constructor.
     pub fn new(files: Vec<VirtualFile>) -> Self {
         Self {
             files,
             cancellation: CancellationToken::new(),
         }
     }
-
+    /// Returns a clone of the request's shared cancellation token.
+    ///
+    /// Keep the token to request cancellation while a blocking drag operation
+    /// is running, for example from another thread or UI callback.
     pub fn cancellation_token(&self) -> CancellationToken {
         self.cancellation.clone()
     }
@@ -110,6 +160,10 @@ impl TransferCompletion {
     }
 }
 
+/// Provides cancellation and status inspection for a drag transfer.
+///
+/// A handle can outlive the initial drag-and-drop call because the receiver
+/// may continue transferring file contents asynchronously.
 pub struct TransferHandle {
     completion: Arc<TransferCompletion>,
     cancellation: CancellationToken,
@@ -123,10 +177,18 @@ impl TransferHandle {
         }
     }
 
+    /// Returns the latest recorded transfer status without waiting.
+    ///
+    /// For asynchronous receivers, a drop is not the same as successful file
+    /// delivery. Interpret [`TransferStatus::Dropped`] accordingly.
     pub fn status(&self) -> TransferStatus {
         self.completion.status()
     }
 
+    /// Requests cooperative cancellation of this transfer.
+    ///
+    /// The method does not wait for completion and cannot interrupt an already
+    /// blocking source read immediately.
     pub fn cancel(&self) {
         self.cancellation.cancel()
     }
