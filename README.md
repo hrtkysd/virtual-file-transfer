@@ -242,7 +242,7 @@ cargo run --example slow_drag
 cargo run --example slow_clipboard
 ```
 
-Both drag examples open a window. Press and hold the left mouse button in that window, then drop into Explorer.
+The drag-and-drop examples open a window. Press and hold the left mouse button in that window, then drop into Explorer.
 
 The ZIP example currently expects `sample.zip` in the working directory containing `hello.txt` and `world.txt`. When run from the repository root with `cargo run`, put the ZIP there (or change the paths in the example).
 
@@ -268,7 +268,7 @@ This is not yet a compatibility-tested replacement for every Windows drag-and-dr
 
 ## Next steps
 
-Near term: improve COM compatibility tests, extend explicit spooling tests to large and failing sources, document clipboard lifetime behavior, and refine the lower-level `IDataObject` API so applications can retain control of their own drag-and-drop flow.
+Near term: improve COM compatibility tests, extend explicit spooling tests to large and failing sources, refine the lower-level `IDataObject` API so applications can retain control of their own drag-and-drop flow.
 
 Later: a C ABI and optional C++/C# wrappers, and a macOS backend. ZIP and HTTP integrations are candidates for separate adapters rather than required dependencies of the core crate.
 
