@@ -6,12 +6,23 @@ description = "Transfer in-memory, generated, or archived data as files via Wind
 license = "MIT"
 repository = "https://github.com/hrtkysd/virtual-file-transfer"
 readme = "README.md"
-keywords = ["windows", "clipboard", "drag-and-drop", "ole"]
+categories = [
+    "os::windows-apis",
+    "filesystem",
+    "api-bindings",
+]
 exclude = [
     "/.github/",
     "/.editorconfig",
     "/.gitattributes",
     "/.gitignore",
+]
+keywords = [
+    "windows",
+    "drag-and-drop",
+    "clipboard",
+    "virtual-files",
+    "ole",
 ]
 
 [package.metadata.docs.rs]

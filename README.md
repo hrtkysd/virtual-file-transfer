@@ -33,6 +33,13 @@ This is not a virtual filesystem or a global drag-and-drop hook.
 
 ## Using it
 
+Add the crate to your `Cargo.toml`:
+
+```toml
+[dependencies]
+virtual-file-transfer = "0.1"
+```
+
 For local development:
 
 ```toml
