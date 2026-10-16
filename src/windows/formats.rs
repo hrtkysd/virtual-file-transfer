@@ -193,4 +193,23 @@ mod tests {
         };
         assert!(create_file_descriptor(&metadata).is_err());
     }
+
+    #[test]
+    fn supports_file_sizes_over_4gib() {
+        let cases = [(1u64 << 32) - 1, 1u64 << 32, (1u64 << 32) + 1];
+
+        for size in cases {
+            let descriptor = create_file_descriptor(&FileDescriptorMetadata {
+                name: "large.bin",
+                size: Some(size),
+            })
+            .unwrap();
+
+            let high = descriptor.nFileSizeHigh;
+            let low = descriptor.nFileSizeLow;
+
+            let actual = ((high as u64) << 32) | low as u64;
+            assert_eq!(actual, size);
+        }
+    }
 }

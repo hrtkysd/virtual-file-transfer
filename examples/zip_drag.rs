@@ -146,7 +146,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
 
     let instance = HINSTANCE(module.0);
 
-    let class_name = w!("PromisedFileSimpleDrag");
+    let class_name = w!("VirtualFileZipDrag");
 
     let window_class = WNDCLASSW {
         style: CS_HREDRAW | CS_VREDRAW,
@@ -167,7 +167,7 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         CreateWindowExW(
             WINDOW_EX_STYLE::default(),
             class_name,
-            w!("PromisedFile - click and drag to Explorer"),
+            w!("Zip Drag - click and drag to Explorer"),
             WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT,
             CW_USEDEFAULT,
